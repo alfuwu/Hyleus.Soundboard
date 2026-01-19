@@ -1,0 +1,12 @@
+This project needs the following libraries in order to function. Note that while each project has a version listed, it is entirely possible that newer (or older) versions are still compatible. The version listed is simply the currently used version of the library.
+Concentus          - 2.2.2
+Concentus.Oggfile  - 1.0.6
+MonoGame.Framework - 3.8.4.1
+Hyleus.Pipeline    - 1.0
+NVorbis            - 0.10.4
+SoundFlow          - 1.4.0
+
+These following libraries may or may not be needed depending on how the project develops, however they are currently in use.
+SharpJaad.AAC      - 0.1.0
+fdk-aac            - 2.0.3
+MathNet.Numerics   - 5.0.0
