@@ -1,6 +1,5 @@
 ﻿using System;
 using System.IO;
-using Hyleus.Soundboard.Framework;
 using SoundFlow.Enums;
 using SoundFlow.Interfaces;
 using SoundFlow.Structs;

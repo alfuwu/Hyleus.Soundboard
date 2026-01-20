@@ -50,6 +50,4 @@ public static class StringExtensions {
             big = big * alphabetSize + (c - 33 - alphabetSize);
         return big.ToByteArray(true, true).Decode(Encoding.UTF8);
     }
-
-    public static string Decode(this byte[] array, Encoding encoding = null) => (encoding ?? Encoding.ASCII).GetString(array);
 }

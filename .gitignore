@@ -416,4 +416,4 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
-/Audio/VoiceChangers/*PitchShifter.cs
+/Audio/Modifiers/*PitchShifter.cs

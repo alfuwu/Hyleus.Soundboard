@@ -1,114 +1,126 @@
 ﻿using System;
-using Hyleus.Soundboard.Framework;
-using Hyleus.Soundboard.Framework.Enums;
-using Hyleus.Soundboard.Framework.Interfaces;
+using System.Collections.Generic;
+using System.IO;
+using SharpJaad.AAC;
+using SharpJaad.MP4;
+using SharpJaad.MP4.API;
 using SoundFlow.Enums;
 using SoundFlow.Interfaces;
+using SoundFlow.Structs;
+using static SharpJaad.MP4.API.AudioTrack;
 
 namespace Hyleus.Soundboard.Audio.Decoders;
-sealed unsafe class AacDecoder : ISoundDecoder, IDisposable {
-    private readonly IAacFrameSource _source;
-    private readonly IntPtr _decoder;
+internal sealed class AacDecoder : ISoundDecoder, IDisposable {
+    private readonly Stream _stream;
+    private readonly AudioTrack _track;
+    private readonly Decoder _decoder;
+    private readonly SampleBuffer _buffer;
+    private readonly Queue<float> _sampleQueue = new();
     private bool _eos;
+    private bool _isDisposed;
 
-    private readonly short[] _pcm16;
-    private readonly int _maxSamples;
-
-    public int Channels { get; }
-    public int SampleRate { get; }
-    public int Length { get; }
+    public int Channels { get; private set; }
+    public int SampleRate { get; private set; }
+    public int TargetSampleRate { get; }
+    public int Length => 0; // Unknown for streaming AAC
     public SampleFormat SampleFormat => SampleFormat.F32;
-    public bool IsDisposed { get; private set; }
+    public bool IsDisposed => _isDisposed;
 
     public event EventHandler<EventArgs> EndOfStreamReached;
 
-    public AacDecoder(IAacFrameSource source, int maxChannels = 2) {
-        ArgumentNullException.ThrowIfNull(source);
+    public AacDecoder(Stream stream, AudioFormat format) {
+        MP4Container container = new(stream);
+        Movie movie = container.GetMovie();
 
-        _source = source;
-        _decoder = FdkAacNative.aacDecoder_Open(
-            AacTransportType.TT_MP4_RAW,
-            1
-        );
+        foreach (var track in movie.GetTracks()) {
+            if (track is AudioTrack audio && (AudioCodec)audio.GetCodec() == AudioCodec.AAC) {
+                _track = audio;
+                break;
+            }
+        }
 
-        if (_decoder == IntPtr.Zero)
-            throw new InvalidOperationException("Failed to open FDK-AAC decoder");
+        if (_track == null)
+            throw new Exception("Provided file possesses no audio track");
 
-        _maxSamples = 2048 * maxChannels;
-        _pcm16 = new short[_maxSamples];
+        Channels = _track.GetChannelCount();
+        SampleRate = _track.GetSampleRate();
+        TargetSampleRate = format.SampleRate;
 
-        Channels = FdkAacNative.aacDecoder_GetParam(
-            _decoder,
-            AacDecoderParam.AAC_PCM_OUTPUT_CHANNELS
-        );
-
-        SampleRate = FdkAacNative.aacDecoder_GetParam(
-            _decoder,
-            AacDecoderParam.AAC_PCM_OUTPUT_SAMPLE_RATE
-        );
+        _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        _decoder = new Decoder(_track.GetDecoderSpecificInfo());
+        _buffer = new SampleBuffer();
     }
 
     public int Decode(Span<float> samples) {
-        if (IsDisposed || _eos)
+        if (_isDisposed || _eos)
             return 0;
 
-        if (!_source.TryGetNextFrame(out var frame)) {
-            _eos = true;
-            EndOfStreamReached?.Invoke(this, EventArgs.Empty);
-            return 0;
-        }
+        while (_sampleQueue.Count < samples.Length && !_eos) {
+            var frame = _track.ReadNextFrame();
+            if (frame == null) {
+                _eos = true;
+                EndOfStreamReached?.Invoke(this, EventArgs.Empty);
+                break;
+            }
 
-        fixed (byte* framePtr = frame.Span) {
-            IntPtr buf = (IntPtr)framePtr;
-            int size = frame.Length;
-            int valid = size;
+            _decoder.DecodeFrame(frame.GetData(), _buffer);
 
-            var err = FdkAacNative.aacDecoder_Fill(
-                _decoder,
-                ref buf,
-                ref size,
-                ref valid
-            );
+            byte[] data = _buffer.Data;
+            int bytesPerSample = _buffer.BitsPerSample / 8;
 
-            if (err != AacDecoderError.OK)
-                return 0;
+            if (bytesPerSample < 1 || bytesPerSample > 4)
+                throw new NotSupportedException($"Unsupported PCM bit depth ({_buffer.BitsPerSample}); expected one of 8, 16, 24, 32");
 
-            fixed (short* pcmPtr = _pcm16) {
-                err = FdkAacNative.aacDecoder_DecodeFrame(
-                    _decoder,
-                    pcmPtr,
-                    _pcm16.Length,
-                    0
-                );
+            if (!_buffer.BigEndian)
+                _buffer.SetBigEndian(true);
 
-                if (err != AacDecoderError.OK)
-                    return 0;
+            int sampleCount = data.Length / bytesPerSample;
 
-                int sampleCount = Math.Min(samples.Length, _pcm16.Length);
-
+            // hell
+            if (bytesPerSample == 1) {
                 for (int i = 0; i < sampleCount; i++)
-                    samples[i] = _pcm16[i] / 32768f;
-
-                return sampleCount;
+                    _sampleQueue.Enqueue(((sbyte)data[i]) / 128f);
+            } else if (bytesPerSample == 2) {
+                for (int i = 0; i < sampleCount; i++) {
+                    short pcm = (short)((data[i * 2] << 8) | data[i * 2 + 1]);
+                    _sampleQueue.Enqueue(pcm / 32768f);
+                }
+            } else if (bytesPerSample == 3) {
+                for (int i = 0; i < sampleCount; i++) {
+                    int pcm = (data[i * 2] << 16) | (data[i * 2 + 1] << 8) | data[i * 2 + 2];
+                    _sampleQueue.Enqueue(pcm / 8388608f);
+                }
+            } else {
+                for (int i = 0; i < sampleCount; i++) {
+                    int pcm = (data[i * 2] << 24) | (data[i * 2 + 1] << 16) | (data[i * 2 + 2] << 8) | data[i * 2 + 3];
+                    _sampleQueue.Enqueue(pcm / 2147483648f);
+                }
             }
         }
+
+        int n = Math.Min(samples.Length, _sampleQueue.Count);
+        for (int i = 0; i < n; i++)
+            samples[i] = _sampleQueue.Dequeue();
+
+        return n;
     }
 
     public bool Seek(int offset) {
-        _source.SeekToFrame(offset / Channels);
+        if (!_stream.CanSeek)
+            return false;
+
+        _stream.Seek(offset, SeekOrigin.Begin);
+        _sampleQueue.Clear();
         _eos = false;
         return true;
     }
 
     public void Dispose() {
-        if (IsDisposed)
+        if (_isDisposed)
             return;
 
-        _source?.Dispose();
-        FdkAacNative.aacDecoder_Close(_decoder);
-        IsDisposed = true;
+        _isDisposed = true;
+        _stream.Dispose();
         GC.SuppressFinalize(this);
     }
-
-    ~AacDecoder() => Dispose();
 }

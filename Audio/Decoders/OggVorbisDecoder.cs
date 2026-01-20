@@ -1,6 +1,5 @@
 ﻿using System;
 using System.IO;
-using Hyleus.Soundboard.Framework.Extensions;
 using NVorbis;
 using SoundFlow.Enums;
 using SoundFlow.Interfaces;
@@ -46,8 +45,9 @@ internal sealed class OggVorbisDecoder : ISoundDecoder, IDisposable {
             EndOfStreamReached?.Invoke(this, EventArgs.Empty);
         }
 
-        int outCount = AudioEngine.Resample(floatPacket, samples, SampleRate, TargetSampleRate, ref _resampleBuffer);
-        return samplesRead;
+        Span<float> resampled = AudioEngine.Resample(floatPacket, SampleRate, TargetSampleRate, ref _resampleBuffer);
+        resampled.CopyTo(samples);
+        return resampled.Length;
     }
 
     public bool Seek(int offset) {

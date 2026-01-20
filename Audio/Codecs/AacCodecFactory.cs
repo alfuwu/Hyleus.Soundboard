@@ -8,7 +8,7 @@ using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Codecs;
 public sealed class AacCodecFactory : ICodecFactory {
-    public string FactoryId => "Hyleus.SharpJaad.Aac";
+    public string FactoryId => "Hyleus.SharpJaad.AAC";
 
     public IReadOnlyCollection<string> SupportedFormatIds { get; } =
         ["aac", "m4a"];
@@ -16,7 +16,7 @@ public sealed class AacCodecFactory : ICodecFactory {
     public int Priority => 100;
 
     public ISoundDecoder CreateDecoder(Stream stream, string formatId, AudioFormat format) =>
-        null;// new AacDecoder(stream);
+        new AacDecoder(stream, format);
 
     public ISoundDecoder TryCreateDecoder(
         Stream stream,
@@ -24,7 +24,7 @@ public sealed class AacCodecFactory : ICodecFactory {
         AudioFormat? hintFormat = null
     ) {
         try {
-            /*var reader = new AacDecoder(stream);
+            var reader = new AacDecoder(stream, hintFormat ?? new() { SampleRate = 44100 });
 
             detectedFormat = new AudioFormat() {
                 Channels = reader.Channels,
@@ -32,9 +32,7 @@ public sealed class AacCodecFactory : ICodecFactory {
                 Format = SampleFormat.F32
             };
 
-            return reader;*/
-            detectedFormat = new();
-            return null;
+            return reader;
         } catch (Exception) {
             detectedFormat = new AudioFormat();
             return null;
@@ -42,5 +40,5 @@ public sealed class AacCodecFactory : ICodecFactory {
     }
 
     public ISoundEncoder CreateEncoder(Stream stream, string formatId, AudioFormat format)
-        => null; // NVorbis is decode-only
+        => null;
 }

@@ -2,7 +2,6 @@
 using System.IO;
 using Concentus;
 using Concentus.Oggfile;
-using Hyleus.Soundboard.Framework;
 using SoundFlow.Enums;
 using SoundFlow.Interfaces;
 using SoundFlow.Structs;
@@ -38,8 +37,9 @@ internal sealed class OggOpusDecoder(Stream stream, AudioFormat format) : ISound
         for (int i = 0; i < packet.Length; i++)
             floatPacket[i] = packet[i] / 32768f;
 
-        int outCount = AudioEngine.Resample(floatPacket, samples, SampleRate, TargetSampleRate, ref _resampleBuffer);
-        return outCount;
+        Span<float> resampled = AudioEngine.Resample(floatPacket, SampleRate, TargetSampleRate, ref _resampleBuffer);
+        resampled.CopyTo(samples);
+        return resampled.Length;
     }
 
     public bool Seek(int offset) {
