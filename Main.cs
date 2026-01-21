@@ -40,7 +40,7 @@ public class Main : Game {
 
     protected override void Initialize() {
         try {
-            _audio = new AudioEngine(48000);
+            _audio = new AudioEngine(44100);
         } catch (Exception e) {
             if (e.Message.Contains("VB-Audio Cable")) {
                 ShowInstallPrompt();

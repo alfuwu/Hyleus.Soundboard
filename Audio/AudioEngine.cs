@@ -79,9 +79,9 @@ public class AudioEngine : IDisposable {
         _micPlayer.Play();
 
         // registering new decoder codecs
-        _engine.RegisterCodecFactory(new AacCodecFactory());
-        _engine.RegisterCodecFactory(new AiffCodecFactory());
-        //_engine.RegisterCodecFactory(new MatroskaCodecFactory());
+        //_engine.RegisterCodecFactory(new AacCodecFactory());
+        //_engine.RegisterCodecFactory(new AiffCodecFactory());
+        _engine.RegisterCodecFactory(new MatroskaCodecFactory());
         _engine.RegisterCodecFactory(new OggOpusCodecFactory());
         _engine.RegisterCodecFactory(new OggVorbisCodecFactory());
     }
@@ -105,7 +105,7 @@ public class AudioEngine : IDisposable {
             _playbackDevice.MasterMixer.AddComponent(filePlayer);
             filePlayer.Play();
 
-            Log.Info($"Playing sound '{filePath}'");
+            Log.Info($"Playing sound '{filePlayer.Name}'");
             filePlayer.PlaybackEnded += (s, e) => {
                 // remove from mixer and dispose when finished
                 _playbackDevice.MasterMixer.RemoveComponent(filePlayer);

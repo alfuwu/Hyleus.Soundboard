@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace Hyleus.Soundboard.Framework.Extensions;
@@ -9,6 +10,8 @@ public static class IEnumerableExtensions {
         $"[{string.Join(", ", enumerable)}]";
     public static string AsString<T>(this Span<T> span) =>
         $"[{string.Join(", ", span.ToArray())}]";
+    public static string AsHexString(this Span<byte> span) =>
+        $"[{string.Join(", ", span.ToArray().Select(b => b.ToString("X2")))}]";
 
     public static bool TryFindValue<T>(this IEnumerable<T> enumerable, Func<T, bool> pred, out T value) {
         foreach (var item in enumerable) {
@@ -29,4 +32,5 @@ public static class IEnumerableExtensions {
     }
 
     public static string Decode(this byte[] array, Encoding encoding = null) => (encoding ?? Encoding.ASCII).GetString(array);
+    public static string Decode(this Span<byte> span, Encoding encoding = null) => (encoding ?? Encoding.ASCII).GetString(span);
 }

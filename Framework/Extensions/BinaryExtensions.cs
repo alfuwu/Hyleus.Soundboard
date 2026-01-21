@@ -135,4 +135,16 @@ public static class BinaryExtensions {
         return new Guid(bytes);
     }
     #endregion
+
+    public static byte[] ReadBytes(this Stream stream, int count) {
+        byte[] bytes = new byte[count];
+        stream.Read(bytes, 0, count);
+        return bytes;
+    }
+
+    public static ulong ReadULong(this Stream stream) {
+        Span<byte> bytes = stackalloc byte[8];
+        stream.Read(bytes);
+        return (ulong)((bytes[0] << 56) | (bytes[1] << 48) | (bytes[2] << 40) | (bytes[3] << 32) | (bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7]);
+    }
 }
