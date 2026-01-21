@@ -107,6 +107,7 @@ public class AudioEngine : IDisposable {
 
             Log.Info($"Playing sound '{filePlayer.Name}'");
             filePlayer.PlaybackEnded += (s, e) => {
+                Log.Info($"Finished playing sound '{filePlayer.Name}'");
                 // remove from mixer and dispose when finished
                 _playbackDevice.MasterMixer.RemoveComponent(filePlayer);
                 filePlayer.Dispose();
