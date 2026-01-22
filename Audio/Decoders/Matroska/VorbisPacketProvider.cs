@@ -1,16 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using Hyleus.Soundboard.Framework;
 using NVorbis.Contracts;
 
 namespace Hyleus.Soundboard.Audio.Decoders.Matroska;
-internal sealed class VorbisPacketProvider : IPacketProvider {
-    private readonly IList<byte[]> _packets;
+internal sealed class VorbisPacketProvider(IList<byte[]> packets) : IPacketProvider {
+    private readonly IList<byte[]> _packets = packets;
     private int _index;
-
-    public VorbisPacketProvider(IList<byte[]> packets) {
-        _packets = packets;
-    }
 
     public bool CanSeek => false;
     public long ContainerBits {
@@ -21,7 +16,7 @@ internal sealed class VorbisPacketProvider : IPacketProvider {
             return bits;
         }
     }
-    public long ContainerOverheadBits => 0;
+    public static long ContainerOverheadBits => 0;
     public long NextPacketBits => (PeekNextPacket() as RawVorbisPacket).Length * 8;
 
     public int StreamSerial => 0;

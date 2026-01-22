@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using Hyleus.Soundboard.Audio.Decoders;
 using SoundFlow.Enums;
@@ -13,7 +12,7 @@ public sealed class AacCodecFactory : ICodecFactory {
     public IReadOnlyCollection<string> SupportedFormatIds { get; } =
         ["aac", "m4a"];
 
-    public int Priority => 100;
+    public int Priority => 10; // our AAC decoder silently fails so we don't want it to go first
 
     public ISoundDecoder CreateDecoder(Stream stream, string formatId, AudioFormat format) =>
         new AacDecoder(stream, format);
@@ -24,7 +23,7 @@ public sealed class AacCodecFactory : ICodecFactory {
         AudioFormat? hintFormat = null
     ) {
         try {
-            var reader = new AacDecoder(stream, hintFormat ?? new() { SampleRate = 44100 });
+            var reader = new AacDecoder(stream, hintFormat ?? new AudioFormat() { Channels = 2, SampleRate = 44100 });
 
             detectedFormat = new AudioFormat() {
                 Channels = reader.Channels,
@@ -33,8 +32,9 @@ public sealed class AacCodecFactory : ICodecFactory {
             };
 
             return reader;
-        } catch (Exception) {
-            detectedFormat = new AudioFormat();
+        } catch {
+            stream.Seek(0, SeekOrigin.Begin);
+            detectedFormat = default;
             return null;
         }
     }

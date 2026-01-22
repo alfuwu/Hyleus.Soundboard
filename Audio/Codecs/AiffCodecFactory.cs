@@ -34,6 +34,7 @@ public sealed class AiffCodecFactory : ICodecFactory {
 
             return decoder;
         } catch (Exception) {
+            stream.Seek(0, SeekOrigin.Begin);
             detectedFormat = new AudioFormat();
             return null;
         }

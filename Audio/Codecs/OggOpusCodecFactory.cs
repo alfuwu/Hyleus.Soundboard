@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using Hyleus.Soundboard.Audio.Decoders;
 using SoundFlow.Enums;
@@ -12,7 +13,7 @@ public sealed class OggOpusCodecFactory : ICodecFactory {
     public IReadOnlyCollection<string> SupportedFormatIds { get; } =
         ["ogg", "opus"];
 
-    public int Priority => 100;
+    public int Priority => 10; // same problem as with AAC
 
     public ISoundDecoder CreateDecoder(Stream stream, string formatId, AudioFormat format)
         => new OggOpusDecoder(stream, format);
@@ -22,15 +23,21 @@ public sealed class OggOpusCodecFactory : ICodecFactory {
         out AudioFormat detectedFormat,
         AudioFormat? hintFormat = null
     ) {
-        var decoder = new OggOpusDecoder(stream, hintFormat ?? new AudioFormat() { Channels = 2, SampleRate = 44100 });
+        try {
+            var decoder = new OggOpusDecoder(stream, hintFormat ?? new AudioFormat() { Channels = 2, SampleRate = 44100 });
 
-        detectedFormat = new AudioFormat() {
-            Channels = decoder.Channels,
-            SampleRate = decoder.SampleRate,
-            Format = SampleFormat.F32
-        };
+            detectedFormat = new AudioFormat() {
+                Channels = decoder.Channels,
+                SampleRate = decoder.SampleRate,
+                Format = SampleFormat.F32
+            };
 
-        return decoder;
+            return decoder;
+        } catch (Exception) {
+            stream.Seek(0, SeekOrigin.Begin);
+            detectedFormat = new AudioFormat();
+            return null;
+        }
     }
 
     public ISoundEncoder CreateEncoder(Stream stream, string formatId, AudioFormat format)

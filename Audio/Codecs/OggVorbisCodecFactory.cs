@@ -42,8 +42,9 @@ public sealed class OggVorbisCodecFactory : ICodecFactory {
             };
 
             stream.Position = 0;
-            return new OggVorbisDecoder(stream, hintFormat ?? detectedFormat);
+            return new OggVorbisDecoder(stream, detectedFormat);
         } catch (Exception) {
+            stream.Seek(0, SeekOrigin.Begin);
             detectedFormat = new AudioFormat();
             return null;
         }

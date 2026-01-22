@@ -16,7 +16,6 @@ internal sealed class OggVorbisDecoder : ISoundDecoder, IDisposable {
     public int Length { get; }
     public SampleFormat SampleFormat => SampleFormat.F32;
     public bool IsDisposed { get; private set; }
-    private float[] _resampleBuffer = [];
 
     public event EventHandler<EventArgs> EndOfStreamReached;
 
@@ -37,17 +36,14 @@ internal sealed class OggVorbisDecoder : ISoundDecoder, IDisposable {
         if (IsDisposed || _eos)
             return 0;
 
-        Span<float> floatPacket = stackalloc float[samples.Length];
-        int samplesRead = _reader.ReadSamples(floatPacket);
+        int samplesRead = _reader.ReadSamples(samples);
 
         if (samplesRead == 0) {
             _eos = true;
             EndOfStreamReached?.Invoke(this, EventArgs.Empty);
         }
 
-        Span<float> resampled = AudioEngine.Resample(floatPacket, SampleRate, TargetSampleRate, ref _resampleBuffer);
-        resampled.CopyTo(samples);
-        return resampled.Length;
+        return samplesRead;
     }
 
     public bool Seek(int offset) {

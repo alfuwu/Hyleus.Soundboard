@@ -6,14 +6,12 @@ using SoundFlow.Interfaces;
 using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Decoders.Matroska;
-internal class VorbisDecoderWrapper(List<byte[]> packets, AudioFormat format, AudioFormat? targetFormat) : ISoundDecoder {
+internal sealed class VorbisDecoderWrapper(List<byte[]> packets, AudioFormat format, AudioFormat? targetFormat) : ISoundDecoder {
     private readonly StreamDecoder _vorbis = new(new VorbisPacketProvider(packets));
-    private readonly int _channels = format.Channels;
-    private readonly int _sampleRate = format.SampleRate;
-
-    public int Channels => _channels;
-    public int SampleRate => _sampleRate;
-    public int TargetSampleRate => targetFormat?.SampleRate ?? _sampleRate;
+    
+    public int Channels { get; } = format.Channels;
+    public int SampleRate { get; } = format.SampleRate;
+    public int TargetSampleRate { get; } = targetFormat?.SampleRate ?? format.SampleRate;
     public int Length => 0;
     public bool IsDisposed { get; private set; }
     public SampleFormat SampleFormat => SampleFormat.F32;

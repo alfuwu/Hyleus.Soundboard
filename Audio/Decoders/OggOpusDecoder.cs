@@ -3,25 +3,32 @@ using System.IO;
 using Concentus;
 using Concentus.Oggfile;
 using SoundFlow.Enums;
-using SoundFlow.Interfaces;
 using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Decoders;
-internal sealed class OggOpusDecoder(Stream stream, AudioFormat format) : ISoundDecoder, IDisposable {
-    private readonly OpusOggReadStream _reader = new(OpusCodecFactory.CreateDecoder(48000, format.Channels), stream);
+internal sealed class OggOpusDecoder : ResampledSoundDecoder, IDisposable {
+    private readonly OpusOggReadStream _reader;
     private bool _eos;
 
-    public int Channels { get; } = format.Channels;
-    public int SampleRate => 48000;
-    public int TargetSampleRate { get; } = format.SampleRate;
-    public SampleFormat SampleFormat => SampleFormat.F32;
-    public int Length { get; }
-    public bool IsDisposed { get; private set; }
-    private float[] _resampleBuffer = [];
+    public override int Channels { get; }
+    public override int SampleRate => 48000;
+    public override int TargetSampleRate { get; }
+    public override SampleFormat SampleFormat => SampleFormat.F32;
+    public override int Length { get; }
+    public override bool IsDisposed { get; protected set; }
 
-    public event EventHandler<EventArgs> EndOfStreamReached;
+    public override event EventHandler<EventArgs> EndOfStreamReached;
+    public override EventHandler<EventArgs> GetEndOfStreamReached() => EndOfStreamReached;
 
-    public int Decode(Span<float> samples) {
+    internal OggOpusDecoder(Stream stream, AudioFormat format) {
+        _reader = new(OpusCodecFactory.CreateDecoder(48000, format.Channels), stream);
+        Channels = format.Channels;
+        TargetSampleRate = format.SampleRate;
+
+        Init();
+    }
+
+    protected override int DecodeSource(Span<float> samples) {
         if (IsDisposed || _eos)
             return 0;
 
@@ -33,16 +40,14 @@ internal sealed class OggOpusDecoder(Stream stream, AudioFormat format) : ISound
             return 0;
         }
 
-        Span<float> floatPacket = stackalloc float[packet.Length];
-        for (int i = 0; i < packet.Length; i++)
-            floatPacket[i] = packet[i] / 32768f;
+        int count = int.Min(packet.Length, samples.Length);
+        for (int i = 0; i < count; i++)
+            samples[i] = packet[i] / 32768f;
 
-        Span<float> resampled = AudioEngine.Resample(floatPacket, SampleRate, TargetSampleRate, ref _resampleBuffer);
-        resampled.CopyTo(samples);
-        return resampled.Length;
+        return count;
     }
 
-    public bool Seek(int offset) {
+    public override bool Seek(int offset) {
         if (!_reader.CanSeek)
             return false;
 
@@ -51,7 +56,7 @@ internal sealed class OggOpusDecoder(Stream stream, AudioFormat format) : ISound
         return true;
     }
 
-    public void Dispose() {
+    public override void Dispose() {
         if (IsDisposed)
             return;
 

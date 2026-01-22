@@ -5,6 +5,7 @@ using System.Linq;
 using Hyleus.Soundboard.Audio.Codecs;
 using Hyleus.Soundboard.Audio.VoiceChangers;
 using Hyleus.Soundboard.Framework;
+using SharpJaad.AAC.Syntax;
 using SoundFlow.Abstracts.Devices;
 using SoundFlow.Backends.MiniAudio;
 using SoundFlow.Components;
@@ -79,8 +80,8 @@ public class AudioEngine : IDisposable {
         _micPlayer.Play();
 
         // registering new decoder codecs
-        //_engine.RegisterCodecFactory(new AacCodecFactory());
-        //_engine.RegisterCodecFactory(new AiffCodecFactory());
+        _engine.RegisterCodecFactory(new AacCodecFactory());
+        _engine.RegisterCodecFactory(new AiffCodecFactory());
         _engine.RegisterCodecFactory(new MatroskaCodecFactory());
         _engine.RegisterCodecFactory(new OggOpusCodecFactory());
         _engine.RegisterCodecFactory(new OggVorbisCodecFactory());
@@ -89,16 +90,27 @@ public class AudioEngine : IDisposable {
     public void PlaySound(string filePath) {
         try {
             // open file stream to get data
-            var fileStream = File.OpenRead(filePath);
+            var fs = File.OpenRead(filePath);
+            var stream = new NonClosingStream(fs); // only we are allowed to close the file stream
+            // matroska files were closing the stream early for some reason which is why this is here
 
             // load a file as a data provider
-            var fileProvider = new StreamDataProvider(_engine, _format, fileStream);
+            var fileProvider = new StreamDataProvider(_engine, _format, stream);
 
             // create a player for that file
             var filePlayer = new SoundPlayer(_engine, _format, fileProvider) {
                 Name = Path.GetFileName(filePath),
                 Volume = SfxVolume
             };
+            // wav, flac, and mp3 are automagically resampled to the correct sr as they're part of MiniAudio's internal library
+            // TODO: make it so that PlaybackSpeed isn't used for our codecs because it's quite bad
+            /*if (fileProvider.FormatInfo.FormatIdentifier != "wav" &&
+                fileProvider.FormatInfo.FormatIdentifier != "mp3" &&
+                fileProvider.FormatInfo.FormatIdentifier != "flac" &&
+                fileProvider.FormatInfo.FormatIdentifier != "aiff"
+            )
+                filePlayer.PlaybackSpeed = (float)fileProvider.SampleRate / _format.SampleRate;*/
+            
             _activeSfxs.Add(filePlayer);
 
             // add to master mixer and start playback
@@ -113,8 +125,7 @@ public class AudioEngine : IDisposable {
                 filePlayer.Dispose();
                 fileProvider.Dispose();
 
-                fileStream.Close();
-                fileStream.Dispose();
+                fs.Dispose();
             };
         } catch (Exception ex) {
             Log.Error($"Error playing sound '{filePath}': {ex.Message}");
@@ -137,31 +148,69 @@ public class AudioEngine : IDisposable {
         GC.SuppressFinalize(this);
     }
 
-    public static Span<float> Resample(Span<float> input, int sampleRate, int targetSampleRate, ref float[] resampleBuffer) {
-        if (sampleRate == targetSampleRate)
-            return input;
+    public static float[] Resample(
+        ReadOnlySpan<float> input,
+        int inputSampleRate,
+        int outputSampleRate,
+        int channels,
+        int taps = 32
+    ) {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(inputSampleRate, 0);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(outputSampleRate, 0);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(channels, 0);
 
-        double ratio = (double)targetSampleRate / sampleRate;
-        int outLen = (int)(input.Length * ratio);
-        Span<float> output = new float[outLen];
+        if (taps < 4 || taps % 2 != 0)
+            throw new ArgumentException("taps must be even and >= 4");
 
-        if (resampleBuffer.Length < input.Length)
-            resampleBuffer = new float[input.Length];
+        int inputFrames = input.Length / channels;
+        double ratio = (double)inputSampleRate / outputSampleRate;
+        int outputFrames = (int)Math.Ceiling(inputFrames / ratio);
 
-        input.CopyTo(resampleBuffer);
+        float[] output = new float[outputFrames * channels];
+        int halfTaps = taps / 2;
 
-        for (int i = 0; i < outLen; i++) {
-            double pos = i / ratio;
-            int index = (int)pos;
-            double frac = pos - index;
+        for (int outFrame = 0; outFrame < outputFrames; outFrame++) {
+            double center = outFrame * ratio;
+            int centerInt = (int)Math.Floor(center);
 
-            float sample = resampleBuffer[index];
-            if (index + 1 < input.Length)
-                sample += (resampleBuffer[index + 1] - resampleBuffer[index]) * (float)frac;
+            for (int ch = 0; ch < channels; ch++) {
+                double sum = 0.0;
+                double norm = 0.0;
 
-            output[i] = sample;
+                for (int tap = -halfTaps + 1; tap <= halfTaps; tap++) {
+                    int inFrame = centerInt + tap;
+                    if ((uint)inFrame >= (uint)inputFrames)
+                        continue;
+
+                    int inIndex = inFrame * channels + ch;
+
+                    double x = center - inFrame;
+                    double sinc = Sinc(x);
+                    double window = Hann((x + halfTaps) / taps);
+
+                    double w = sinc * window;
+                    sum += input[inIndex] * w;
+                    norm += w;
+                }
+
+                output[outFrame * channels + ch] =
+                    norm > 0.0 ? (float)(sum / norm) : 0f;
+            }
         }
 
         return output;
+    }
+
+    private static double Sinc(double x) {
+        if (Math.Abs(x) < 1e-8)
+            return 1.0;
+
+        double px = Math.PI * x;
+        return Math.Sin(px) / px;
+    }
+
+    private static double Hann(double t) {
+        // t in [0, 1]
+        return 0.5 * (1.0 - Math.Cos(2.0 * Math.PI * t));
     }
 }

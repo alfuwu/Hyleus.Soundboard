@@ -2,11 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Concentus;
-using Concentus.Oggfile;
 using Hyleus.Soundboard.Audio.Decoders;
-using Hyleus.Soundboard.Framework;
-using MathNet.Numerics.Distributions;
 using Matroska;
 using Matroska.Models;
 using SoundFlow.Enums;
@@ -15,7 +11,7 @@ using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Codecs;
 public sealed class MatroskaCodecFactory : ICodecFactory {
-    public string FactoryId => "Hyleus.Matroska.OpusVorbis";
+    public string FactoryId => "Hyleus.Matroska.Matroska";
 
     public IReadOnlyCollection<string> SupportedFormatIds { get; } =
         ["mkv", "webm"];
@@ -29,7 +25,15 @@ public sealed class MatroskaCodecFactory : ICodecFactory {
         Stream stream,
         out AudioFormat detectedFormat,
         AudioFormat? hintFormat = null
-    ) => DecoderFromDoc(MatroskaSerializer.Deserialize(stream), hintFormat, out detectedFormat);
+    ) {
+        try {
+            return DecoderFromDoc(MatroskaSerializer.Deserialize(stream), hintFormat, out detectedFormat);
+        } catch (Exception) {
+            stream.Seek(0, SeekOrigin.Begin);
+            detectedFormat = new AudioFormat();
+            return null;
+        }
+    }
 
     private static List<byte[]> ParseVorbisCodecPrivate(byte[] codecPrivate) {
         int offset = 0;
@@ -61,7 +65,7 @@ public sealed class MatroskaCodecFactory : ICodecFactory {
             packets.Add(packet);
         }
 
-        // Last packet takes the remaining bytes
+        // last packet takes the remaining bytes
         var lastPacket = new byte[codecPrivate.Length - offset];
         Buffer.BlockCopy(codecPrivate, offset, lastPacket, 0, lastPacket.Length);
         packets.Add(lastPacket);
@@ -73,9 +77,11 @@ public sealed class MatroskaCodecFactory : ICodecFactory {
         TrackEntry track = doc.Segment.Tracks.TrackEntries
             .FirstOrDefault(t => t.Audio != null) ?? throw new Exception("No audio track found");
 
-        var packets = track.CodecID == "A_VORBIS" ?
-            ParseVorbisCodecPrivate(track.CodecPrivate) :
-            [];
+        var packets = track.CodecID switch {
+            "A_VORBIS" => ParseVorbisCodecPrivate(track.CodecPrivate),
+            "A_AAC" => [track.CodecPrivate!],
+            _ => []
+        };
 
         foreach (var cluster in doc.Segment.Clusters) {
             if (cluster.BlockGroups != null)

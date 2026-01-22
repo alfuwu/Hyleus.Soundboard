@@ -4,31 +4,20 @@ using SoundFlow.Interfaces;
 using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Decoders;
-public sealed class DummySoundDecoder : ISoundDecoder {
+public sealed class DummySoundDecoder(AudioFormat format) : ISoundDecoder {
     private bool _disposed;
     private int _position;
 
-    public DummySoundDecoder(AudioFormat format) {
-        SampleRate = format.SampleRate;
-        Channels = format.Channels;
-        Length = 0; // 0 means unknown / streaming
-        SampleFormat = format.Format;
-    }
-
     public bool IsDisposed => _disposed;
-
-    public int Length { get; }
-
-    public SampleFormat SampleFormat { get; }
-
-    public int Channels { get; }
-
-    public int SampleRate { get; }
+    public int Channels { get; } = format.Channels;
+    public int SampleRate { get; } = format.SampleRate;
+    public int Length { get; } = 0; // 0 means unknown / streaming
+    public SampleFormat SampleFormat { get; } = format.Format;
 
     public event EventHandler<EventArgs> EndOfStreamReached;
 
     public int Decode(Span<float> samples) {
-        ThrowIfDisposed();
+        ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (samples.Length == 0)
             return 0;
@@ -56,7 +45,7 @@ public sealed class DummySoundDecoder : ISoundDecoder {
     }
 
     public bool Seek(int offset) {
-        ThrowIfDisposed();
+        ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (offset < 0)
             return false;
@@ -73,10 +62,5 @@ public sealed class DummySoundDecoder : ISoundDecoder {
             return;
 
         _disposed = true;
-    }
-
-    private void ThrowIfDisposed() {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(DummySoundDecoder));
     }
 }

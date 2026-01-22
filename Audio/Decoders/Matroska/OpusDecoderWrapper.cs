@@ -7,29 +7,22 @@ using SoundFlow.Interfaces;
 using SoundFlow.Structs;
 
 namespace Hyleus.Soundboard.Audio.Decoders.Matroska;
-internal class OpusDecoderWrapper : ISoundDecoder {
-    private readonly IOpusDecoder _decoder;
-    private readonly List<byte[]> _packets;
+internal sealed class OpusDecoderWrapper(List<byte[]> packets, AudioFormat format, AudioFormat? targetFormat) : ISoundDecoder {
+    private readonly IOpusDecoder _decoder = OpusCodecFactory.CreateDecoder(format.SampleRate, format.Channels);
+    private readonly List<byte[]> _packets = packets;
     private int _currentPacketIndex = 0;
     private readonly float[] _decodeBuffer = new float[960 * 2];
     private int _decodeBufferLength = 0;
     private int _decodeBufferPosition = 0;
 
-    public int Channels { get; }
-    public int SampleRate { get; }
-    public int TargetSampleRate => SampleRate;
+    public int Channels { get; } = format.Channels;
+    public int SampleRate { get; } = format.SampleRate;
+    public int TargetSampleRate { get; } = targetFormat?.SampleRate ?? format.SampleRate;
     public int Length => _packets.Sum(p => p.Length); // optional
     public bool IsDisposed { get; private set; }
     public SampleFormat SampleFormat => SampleFormat.F32;
 
     public event EventHandler<EventArgs> EndOfStreamReached;
-
-    public OpusDecoderWrapper(List<byte[]> packets, AudioFormat format, AudioFormat? targetFormat) {
-        _packets = packets;
-        Channels = format.Channels;
-        SampleRate = format.SampleRate;
-        _decoder = OpusCodecFactory.CreateDecoder(SampleRate, Channels);
-    }
 
     public bool Seek(int offset) {
         _currentPacketIndex = 0;

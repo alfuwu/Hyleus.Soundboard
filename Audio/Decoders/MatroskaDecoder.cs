@@ -11,7 +11,6 @@ public class MatroskaDecoder : ISoundDecoder {
 
     public int Channels => _decoder.Channels;
     public int SampleRate => _decoder.SampleRate;
-    public int TargetSampleRate { get; }
     public int Length => _decoder.Length;
 
     public bool IsDisposed => _decoder.IsDisposed;
@@ -27,10 +26,10 @@ public class MatroskaDecoder : ISoundDecoder {
             _decoder = new OpusDecoderWrapper(packets, format, targetFormat);
         else if (codec == "A_VORBIS")
             _decoder = new VorbisDecoderWrapper(packets, format, targetFormat);
+        else if (codec == "A_AAC")
+            _decoder = new AacDecoderWrapper(packets, format, targetFormat);
         else
             throw new NotSupportedException($"Codec {codec} is not supported");
-
-        TargetSampleRate = targetFormat?.SampleRate ?? format.SampleRate;
     }
 
     public bool Seek(int offset) => _decoder.Seek(offset);
