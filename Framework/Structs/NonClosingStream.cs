@@ -1,10 +1,10 @@
 ﻿using System.IO;
 
-namespace Hyleus.Soundboard.Framework;
+namespace Hyleus.Soundboard.Framework.Structs;
 internal sealed class NonClosingStream(Stream inner) : Stream {
     private readonly Stream _inner = inner;
 
-    protected override void Dispose(bool disposing) => Log.Error("attempted to dispose stream");
+    protected override void Dispose(bool disposing) { }
 
     public override bool CanRead => _inner.CanRead;
     public override bool CanSeek => _inner.CanSeek;

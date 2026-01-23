@@ -66,6 +66,13 @@ public static class BinaryExtensions {
     public static void Write(this BinaryWriter writer, Guid uuid) {
         writer.Write(uuid.ToByteArray());
     }
+    public static void WriteStringOrNull(this BinaryWriter writer, string str) {
+        if (str != null)
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(str.Length, ushort.MaxValue);
+        writer.Write((ushort)(str == null ? 0 : str.Length));
+        if (str != null)
+            writer.Write(str, str.Length);
+    }
     #endregion
 
     #region Reading
@@ -117,6 +124,10 @@ public static class BinaryExtensions {
         char[] chars = new char[length];
         reader.Read(chars, 0, length);
         return new string(chars);
+    }
+    public static string ReadStringOrNull(this BinaryReader reader) {
+        var n = reader.ReadUInt16();
+        return n == 0 ? null : reader.ReadString(n);
     }
     public static Vector2 ReadVector2(this BinaryReader reader) {
         float x = reader.ReadSingle();

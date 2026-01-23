@@ -5,6 +5,7 @@ using System.Linq;
 using Hyleus.Soundboard.Audio.Codecs;
 using Hyleus.Soundboard.Audio.VoiceChangers;
 using Hyleus.Soundboard.Framework;
+using Hyleus.Soundboard.Framework.Structs;
 using SharpJaad.AAC.Syntax;
 using SoundFlow.Abstracts.Devices;
 using SoundFlow.Backends.MiniAudio;
@@ -87,7 +88,7 @@ public class AudioEngine : IDisposable {
         _engine.RegisterCodecFactory(new OggVorbisCodecFactory());
     }
 
-    public void PlaySound(string filePath) {
+    public void PlaySound(string filePath, float volume = 1.0f) {
         try {
             // open file stream to get data
             var fs = File.OpenRead(filePath);
@@ -100,7 +101,7 @@ public class AudioEngine : IDisposable {
             // create a player for that file
             var filePlayer = new SoundPlayer(_engine, _format, fileProvider) {
                 Name = Path.GetFileName(filePath),
-                Volume = SfxVolume
+                Volume = SfxVolume * volume
             };
             // wav, flac, and mp3 are automagically resampled to the correct sr as they're part of MiniAudio's internal library
             // TODO: make it so that PlaybackSpeed isn't used for our codecs because it's quite bad
@@ -146,71 +147,5 @@ public class AudioEngine : IDisposable {
         _engine?.Dispose();
 
         GC.SuppressFinalize(this);
-    }
-
-    public static float[] Resample(
-        ReadOnlySpan<float> input,
-        int inputSampleRate,
-        int outputSampleRate,
-        int channels,
-        int taps = 32
-    ) {
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(inputSampleRate, 0);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(outputSampleRate, 0);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(channels, 0);
-
-        if (taps < 4 || taps % 2 != 0)
-            throw new ArgumentException("taps must be even and >= 4");
-
-        int inputFrames = input.Length / channels;
-        double ratio = (double)inputSampleRate / outputSampleRate;
-        int outputFrames = (int)Math.Ceiling(inputFrames / ratio);
-
-        float[] output = new float[outputFrames * channels];
-        int halfTaps = taps / 2;
-
-        for (int outFrame = 0; outFrame < outputFrames; outFrame++) {
-            double center = outFrame * ratio;
-            int centerInt = (int)Math.Floor(center);
-
-            for (int ch = 0; ch < channels; ch++) {
-                double sum = 0.0;
-                double norm = 0.0;
-
-                for (int tap = -halfTaps + 1; tap <= halfTaps; tap++) {
-                    int inFrame = centerInt + tap;
-                    if ((uint)inFrame >= (uint)inputFrames)
-                        continue;
-
-                    int inIndex = inFrame * channels + ch;
-
-                    double x = center - inFrame;
-                    double sinc = Sinc(x);
-                    double window = Hann((x + halfTaps) / taps);
-
-                    double w = sinc * window;
-                    sum += input[inIndex] * w;
-                    norm += w;
-                }
-
-                output[outFrame * channels + ch] =
-                    norm > 0.0 ? (float)(sum / norm) : 0f;
-            }
-        }
-
-        return output;
-    }
-
-    private static double Sinc(double x) {
-        if (Math.Abs(x) < 1e-8)
-            return 1.0;
-
-        double px = Math.PI * x;
-        return Math.Sin(px) / px;
-    }
-
-    private static double Hann(double t) {
-        // t in [0, 1]
-        return 0.5 * (1.0 - Math.Cos(2.0 * Math.PI * t));
     }
 }

@@ -8,7 +8,6 @@ using Hyleus.Soundboard.Framework.Enums;
 using Microsoft.Xna.Framework;
 
 namespace Hyleus.Soundboard;
-
 public static class Preferences {
 
     // event shenanigans
@@ -29,9 +28,14 @@ public static class Preferences {
 
     // inner fields
     private static Locale _locale = Locale.English;
-    private static bool _useCustomMouse = true;
-    private static Color _mouseColor = Color.Black;
-    private static Color _mouseBorderColor = Color.White;
+    private static Color _bgColor = new(50, 46, 47);
+    private static Color _fxColor1 = new(54, 48, 49);
+    private static Color _fxColor2 = new(40, 39, 39);
+    private static Color _fxColor3 = new(58, 50, 51);
+    private static int _padding = 12;
+    private static int _margin = 20;
+    private static int _maxButtonSize = 128;
+    private static int _minButtonSize = 64;
 
     // properties
     [Description("""
@@ -49,12 +53,20 @@ public static class Preferences {
          - mi-HY (Miulyn)
         """)]
     public static Locale CurrentLocale { get => _locale; set => Update(nameof(CurrentLocale), ref _locale, value); }
-    [Description("Determines whether the game should use a custom mouse cursor or not.")]
-    public static bool UseCustomMouse { get => _useCustomMouse; set => Update(nameof(UseCustomMouse), ref _useCustomMouse, value); }
-    [Description("The color of the mouse cursor's insides.\nDoesn't apply if UseCustomMouse is false.")]
-    public static Color MouseColor { get => _mouseColor; set => Update(nameof(MouseColor), ref _mouseColor, value); }
-    [Description("The color of the mouse cursor's border.\nDoesn't apply if UseCustomMouse is false.")]
-    public static Color MouseBorderColor { get => _mouseBorderColor; set => Update(nameof(MouseBorderColor), ref _mouseBorderColor, value); }
+    [Description("The main background color.")]
+    public static Color BackgroundColor { get => _bgColor; set => Update(nameof(BackgroundColor), ref _bgColor, value); }
+    [Description("The three effects colors, used to spice up the plain background a bit.")]
+    public static Color EffectsColor1 { get => _fxColor1; set => Update(nameof(EffectsColor1), ref _fxColor1, value); }
+    public static Color EffectsColor2 { get => _fxColor2; set => Update(nameof(EffectsColor2), ref _fxColor2, value); }
+    public static Color EffectsColor3 { get => _fxColor3; set => Update(nameof(EffectsColor3), ref _fxColor3, value); }
+    [Description("The padding between soundboard buttons and the window border")]
+    public static int Padding { get => _padding; set => Update(nameof(Padding), ref _padding, value); }
+    [Description("The margin between soundboard buttons")]
+    public static int Margin { get => _margin; set => Update(nameof(Margin), ref _margin, value); }
+    [Description("The maximum size of a soundboard button (in pixels)")]
+    public static int MaxButtonSize { get => _maxButtonSize; set => Update(nameof(MaxButtonSize), ref _maxButtonSize, value); }
+    [Description("The minimum size of a soundboard button (in pixels)")]
+    public static int MinButtonSize { get => _minButtonSize; set => Update(nameof(MinButtonSize), ref _minButtonSize, value); }
 
     /// <summary>
     /// Updates a preference field and invokes the <see cref="OnPreferenceUpdate"/> event.
@@ -73,8 +85,14 @@ public static class Preferences {
 
     private static void LoadDefaults() {
         CurrentLocale = Locale.English;
-        MouseColor = Color.Black;
-        MouseBorderColor = Color.White;
+        BackgroundColor = new(50, 46, 47);
+        EffectsColor1 = new(54, 48, 49);
+        EffectsColor2 = new(40, 39, 39);
+        EffectsColor3 = new(58, 50, 51);
+        Padding = 12;
+        Margin = 20;
+        MaxButtonSize = 128;
+        MinButtonSize = 64;
     }
 
     #region IO
@@ -87,7 +105,6 @@ public static class Preferences {
     public static void LoadTypeConverters() {
         if (_initialized)
             return;
-
     }
 
     public static void LoadPreferences() {
