@@ -25,11 +25,24 @@
 /processorParam:TextureFormat=Color
 /build:DefaultIcon.png
 
-#begin Shaders/Menu.fx
-/importer:EffectImporter
-/processor:EffectProcessor
-/processorParam:DebugMode=Auto
-/build:Shaders/Menu.fx
+#begin Font.spritefont
+/importer:FontDescriptionImporter
+/processor:FontDescriptionProcessor
+/processorParam:PremultiplyAlpha=True
+/processorParam:TextureFormat=Compressed
+/build:Font.spritefont
+
+#begin iChannel2.png
+/importer:TextureImporter
+/processor:TextureProcessor
+/processorParam:ColorKeyColor=255,0,255,255
+/processorParam:ColorKeyEnabled=True
+/processorParam:GenerateMipmaps=False
+/processorParam:PremultiplyAlpha=True
+/processorParam:ResizeToPowerOfTwo=False
+/processorParam:MakeSquare=False
+/processorParam:TextureFormat=Color
+/build:iChannel2.png
 
 #begin Shaders/Menu.fx
 /importer:EffectImporter
@@ -43,15 +56,21 @@
 /processorParam:DebugMode=Auto
 /build:Shaders/Menu2.fx
 
-#begin Shaders/RoundedCorners.fx
+#begin Shaders/Ocean.fx
 /importer:EffectImporter
 /processor:EffectProcessor
 /processorParam:DebugMode=Auto
-/build:Shaders/RoundedCorners.fx
+/build:Shaders/Ocean.fx
 
 #begin Shaders/RoundedCorners.fx
 /importer:EffectImporter
 /processor:EffectProcessor
 /processorParam:DebugMode=Auto
 /build:Shaders/RoundedCorners.fx
+
+#begin Shaders/VoidSea.fx
+/importer:EffectImporter
+/processor:EffectProcessor
+/processorParam:DebugMode=Auto
+/build:Shaders/VoidSea.fx
 

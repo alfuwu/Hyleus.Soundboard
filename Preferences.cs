@@ -36,6 +36,11 @@ public static class Preferences {
     private static int _margin = 20;
     private static int _maxButtonSize = 128;
     private static int _minButtonSize = 64;
+    private static bool _playSoundsToHeadphones = true;
+    private static bool _playVoiceChangerToHeadphones = true;
+    private static bool _playMicToHeadphones = false;
+    private static float _volumeMin = 0.0f;
+    private static float _volumeMax = 10.0f;
 
     // properties
     [Description("""
@@ -55,18 +60,28 @@ public static class Preferences {
     public static Locale CurrentLocale { get => _locale; set => Update(nameof(CurrentLocale), ref _locale, value); }
     [Description("The main background color.")]
     public static Color BackgroundColor { get => _bgColor; set => Update(nameof(BackgroundColor), ref _bgColor, value); }
-    [Description("The three effects colors, used to spice up the plain background a bit.")]
+    [Description("The three effects colors, used to spice up the background a bit.")]
     public static Color EffectsColor1 { get => _fxColor1; set => Update(nameof(EffectsColor1), ref _fxColor1, value); }
     public static Color EffectsColor2 { get => _fxColor2; set => Update(nameof(EffectsColor2), ref _fxColor2, value); }
     public static Color EffectsColor3 { get => _fxColor3; set => Update(nameof(EffectsColor3), ref _fxColor3, value); }
-    [Description("The padding between soundboard buttons and the window border")]
+    [Description("The padding between soundboard buttons and the window border.")]
     public static int Padding { get => _padding; set => Update(nameof(Padding), ref _padding, value); }
-    [Description("The margin between soundboard buttons")]
+    [Description("The margin between soundboard buttons.")]
     public static int Margin { get => _margin; set => Update(nameof(Margin), ref _margin, value); }
-    [Description("The maximum size of a soundboard button (in pixels)")]
+    [Description("The maximum size of a soundboard button (in pixels).")]
     public static int MaxButtonSize { get => _maxButtonSize; set => Update(nameof(MaxButtonSize), ref _maxButtonSize, value); }
-    [Description("The minimum size of a soundboard button (in pixels)")]
+    [Description("The minimum size of a soundboard button (in pixels).")]
     public static int MinButtonSize { get => _minButtonSize; set => Update(nameof(MinButtonSize), ref _minButtonSize, value); }
+    [Description("Plays sounds to both the virtual cable and your audio device, allowing you to hear them too.")]
+    public static bool PlaySoundsToSystem { get => _playSoundsToHeadphones; set => Update(nameof(PlaySoundsToSystem), ref _playSoundsToHeadphones, value); }
+    [Description("Plays microphone input affected by a voice changer effect to your audio device.")]
+    public static bool PlayVoiceChangerToSystem { get => _playVoiceChangerToHeadphones; set => Update(nameof(PlayVoiceChangerToSystem), ref _playVoiceChangerToHeadphones, value); }
+    [Description("Plays all microphone input to your audio device.")]
+    public static bool PlayMicToSystem { get => _playMicToHeadphones; set => Update(nameof(PlayMicToSystem), ref _playMicToHeadphones, value); }
+    [Description("The minimum value you can set audio to using the context menu.")]
+    public static float VolumeMin { get => _volumeMin; set => Update(nameof(VolumeMin), ref _volumeMin, value); }
+    [Description("The maximum value you can set audio to using the context menu.")]
+    public static float VolumeMax { get => _volumeMax; set => Update(nameof(VolumeMax), ref _volumeMax, value); }
 
     /// <summary>
     /// Updates a preference field and invokes the <see cref="OnPreferenceUpdate"/> event.
@@ -93,6 +108,11 @@ public static class Preferences {
         Margin = 20;
         MaxButtonSize = 128;
         MinButtonSize = 64;
+        PlaySoundsToSystem = true;
+        PlayVoiceChangerToSystem = true;
+        PlayMicToSystem = false;
+        VolumeMin = 0.0f;
+        VolumeMax = 10.0f;
     }
 
     #region IO

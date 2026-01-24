@@ -34,6 +34,7 @@ public class Main : Game {
     private readonly List<SoundboardButton> _buttons = [];
     private MouseState _previousMouse;
     private MouseState _mouse;
+    private SpriteFont _font;
     private Texture2D _pixel;
     private Texture2D _defaultIcon;
     private Effect _menu;
@@ -41,8 +42,17 @@ public class Main : Game {
     private Color _btn;
     private Color _btnHover;
     private Color _btnPressed;
+    private Color _ctxMenu;
+    private Color _ctxHover;
+    private Color _ctxPressed;
     private string _preferredInput = null;
     private string _preferredOutput = null;
+    private string _preferredRegularOutput = null;
+    private bool _hasOwnCable = false;
+    private Point _ctxPos;
+    private SoundboardItem _ctxItem = null;
+    private Rectangle? _ctxRect = null;
+    private bool _draggingVolumeSlider = false;
 
     public static Vector2I WindowSize {
         get => new(Instance._graphics.PreferredBackBufferWidth, Instance._graphics.PreferredBackBufferHeight);
@@ -63,10 +73,12 @@ public class Main : Game {
     private SDL_EventFilter _filter = null;
     private bool _started = false;
     private bool _isMaximized = false;
+#if OS_WINDOWS
     [DllImport("user32.dll", ExactSpelling = true)]
 #pragma warning disable IDE0079 // Remove unnecessary suppression
 #pragma warning disable SYSLIB1054 // Use 'LibraryImportAttribute' instead of 'DllImportAttribute' to generate P/Invoke marshalling code at compile time
     private static extern IntPtr SetTimer(IntPtr hWnd, IntPtr nIDEvent, uint uElapse, TimerProc lpTimerFunc);
+#endif
     private delegate void TimerProc(IntPtr hWnd, uint uMsg, IntPtr nIDEvent, uint dwTime);
 
     private IntPtr _handle;
@@ -106,7 +118,7 @@ public class Main : Game {
 
     protected override void Initialize() {
         try {
-            _audio = new AudioEngine(48000);
+            _audio = new AudioEngine(_hasOwnCable, 48000);
         } catch (Exception e) {
             if (e.Message.Contains("VB-Audio Cable")) {
                 ShowInstallPrompt();
@@ -138,6 +150,8 @@ public class Main : Game {
             using var br = new BinaryReader(fs);
             _preferredInput = br.ReadStringOrNull();
             _preferredOutput = br.ReadStringOrNull();
+            _preferredRegularOutput = br.ReadStringOrNull();
+            _hasOwnCable = br.ReadBoolean();
             while (fs.Position < fs.Length) {
                 try {
                     _sounds.Add(SoundboardItem.FromBinary(br));
@@ -148,14 +162,20 @@ public class Main : Game {
             Log.Info("Successfully loaded soundboad data");
         }
 
+        _font = Content.Load<SpriteFont>("Font");
+
         _pixel = new Texture2D(GraphicsDevice, 1, 1);
         _pixel.SetData([Color.White]);
         _defaultIcon = Content.Load<Texture2D>("DefaultIcon");
 
+        //var iChannel2 = Content.Load<Texture2D>("iChannel2");
+        //_graphics.GraphicsDevice.Textures[2] = iChannel2;
+
         _menu = Content.Load<Effect>("Shaders/Menu");
-        _menu.Parameters["Color1"].SetValue(Preferences.EffectsColor1.ToVector3());
-        _menu.Parameters["Color2"].SetValue(Preferences.EffectsColor2.ToVector3());
-        _menu.Parameters["Color3"].SetValue(Preferences.EffectsColor3.ToVector3());
+        _menu.Parameters["Resolution"]?.SetValue(new Vector2(ScreenWidth, ScreenHeight));
+        _menu.Parameters["Color1"]?.SetValue(Preferences.EffectsColor1.ToVector3());
+        _menu.Parameters["Color2"]?.SetValue(Preferences.EffectsColor2.ToVector3());
+        _menu.Parameters["Color3"]?.SetValue(Preferences.EffectsColor3.ToVector3());
         _rounded = Content.Load<Effect>("Shaders/RoundedCorners");
         _rounded.Parameters["CornerRadius"].SetValue(16f);
 
@@ -177,23 +197,64 @@ public class Main : Game {
 
         _mouse = Mouse.GetState();
 
-        if (_mouse.LeftButton == ButtonState.Pressed &&
-            _previousMouse.LeftButton == ButtonState.Released) {
-
-            var mousePoint = _mouse.Position;
+        bool left = LeftClick() &&
+            _previousMouse.LeftButton == ButtonState.Released;
+        if ((left ||
+            _mouse.RightButton == ButtonState.Pressed &&
+            _previousMouse.RightButton == ButtonState.Released) &&
+            IsActive
+        ) {
+            _ctxItem = null;
+            _ctxRect = null;
 
             foreach (var button in _buttons) {
-                if (button.Bounds.Contains(mousePoint)) {
-                    if (button.Item.SoundLocation != null && IsActive)
-                        _audio.PlaySound(button.Item.SoundLocation, button.Item.Volume);
+                if (MouseHover(button.Bounds)) {
+                    if (left) {
+                        if (button.Item.SoundLocation != null)
+                            _audio.PlaySound(button.Item);
+                    } else {
+                        _ctxPos = _mouse.Position;
+                        _ctxItem = button.Item;
+                    }
                     break;
                 }
+            }
+        }
+        if (_ctxItem != null && _ctxRect.HasValue && IsActive) {
+            Rectangle sliderRect = new(
+                _ctxRect.Value.X,
+                _ctxRect.Value.Y + (_ctxRect.Value.Height - 48),
+                _ctxRect.Value.Width,
+                48
+            );
+
+            if (_mouse.LeftButton == ButtonState.Pressed && sliderRect.Contains(_mouse.Position))
+                _draggingVolumeSlider = true;
+            else if (_mouse.LeftButton == ButtonState.Released) {
+                _draggingVolumeSlider = false;
+                SaveSounds();
+            }
+
+            if (_draggingVolumeSlider) {
+                int barX = sliderRect.X + 16;
+                int barWidth = sliderRect.Width - 32;
+
+                float normalized =
+                    (_mouse.X - barX) / (float)barWidth;
+
+                normalized = MathHelper.Clamp(normalized, 0f, 1f);
+
+                float volume =
+                    Preferences.VolumeMin + normalized * (Preferences.VolumeMax - Preferences.VolumeMin);
+
+                _ctxItem.Volume = volume;
             }
         }
 
         _previousMouse = _mouse;
 
-        _menu.Parameters["Time"].SetValue((float)gameTime.TotalGameTime.TotalSeconds);
+        _menu.Parameters["Time"]?.SetValue((float)gameTime.TotalGameTime.TotalSeconds);
+        _menu.Parameters["Mouse"]?.SetValue(new Vector4(_mouse.X, _mouse.Y, _mouse.LeftButton == ButtonState.Pressed && IsActive ? 1 : 0, 0));
 
         base.Update(gameTime);
     }
@@ -216,7 +277,7 @@ public class Main : Game {
                 _spriteBatch.Draw(
                     _pixel,
                     button.Bounds,
-                    button.Bounds.Contains(_mouse.Position) ? _mouse.LeftButton == ButtonState.Pressed ?
+                    MouseHover(button.Bounds) ? LeftClick() ?
                         _btnPressed : _btnHover : _btn
                 );
 
@@ -224,26 +285,152 @@ public class Main : Game {
             _spriteBatch.Draw(
                 icon,
                 button.Bounds,
-                button.Bounds.Contains(_mouse.Position) ? _mouse.LeftButton == ButtonState.Pressed ?
+                MouseHover(button.Bounds) ? LeftClick() ?
                     Color.Gray : Color.DarkGray : Color.White
             );
         }
+        _spriteBatch.End();
+
+        if (_ctxItem != null)
+            DrawContextMenu(_ctxPos);
+    }
+
+    private void DrawContextMenu(Point position) {
+        const int menuWidth = 220;
+        const int menuItemHeight = 36;
+        const int horizontalPadding = 18;
+
+        string[] menuItems = ["Play", "Edit", "Delete"];
+        int sliderHeight = 48;
+
+        int totalHeight =
+            menuItemHeight * menuItems.Length +
+            sliderHeight;
+
+        _ctxRect = new Rectangle(
+            position.X,
+            position.Y,
+            menuWidth,
+            totalHeight
+        );
+
+        // menu background
+        var texVec = _rounded.Parameters["TextureSize"].GetValueVector2();
+        _rounded.Parameters["TextureSize"].SetValue(new Vector2(_ctxRect.Value.Width, _ctxRect.Value.Height));
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
+        _spriteBatch.Draw(_pixel, _ctxRect.Value, _ctxMenu);
+        _spriteBatch.End();
+        _rounded.Parameters["TextureSize"].SetValue(texVec);
+
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+
+        // menu items
+        for (int i = 0; i < menuItems.Length; i++) {
+            Rectangle itemRect = new(position.X, position.Y + i * menuItemHeight, menuWidth, menuItemHeight);
+            Color hover = itemRect.Contains(_mouse.Position) ? _mouse.LeftButton == ButtonState.Pressed ?
+                _ctxPressed : _ctxHover : Color.Transparent;
+            _spriteBatch.Draw(_pixel, itemRect, hover);
+
+            _spriteBatch.Draw(
+                _pixel,
+                new Rectangle(itemRect.X + 8, itemRect.Y + 14, 6, 6),
+                Color.White * 0.6f
+            );
+
+            // text
+            _spriteBatch.DrawString(
+                _font,
+                menuItems[i],
+                new Vector2(itemRect.X + horizontalPadding, itemRect.Y + 8),
+                Color.White,
+                0,
+                Vector2.Zero,
+                1.0f,
+                SpriteEffects.None,
+                0
+            );
+        }
+
+        var divider = new Rectangle(
+            position.X + 12,
+            position.Y + menuItemHeight * menuItems.Length - 1,
+            menuWidth - 24,
+            2
+        );
+
+        _spriteBatch.Draw(_pixel, divider, Color.White * 0.08f);
+
+        var sliderRect = new Rectangle(
+            position.X,
+            position.Y + menuItemHeight * menuItems.Length,
+            menuWidth,
+            sliderHeight
+        );
+
+        // hover background
+        bool sliderHover = sliderRect.Contains(_mouse.Position);
+        _spriteBatch.Draw(
+            _pixel,
+            sliderRect,
+            sliderHover ? _ctxHover : Color.Transparent
+        );
+
+        // label
+        _spriteBatch.DrawString(
+            _font,
+            $"Volume: {_ctxItem.Volume:0.00}",
+            new Vector2(sliderRect.X + horizontalPadding, sliderRect.Y + 6),
+            Color.White
+        );
+
+        // slider bar
+        int barMargin = 16;
+        int barHeight = 6;
+        var barRect = new Rectangle(
+            sliderRect.X + barMargin,
+            sliderRect.Y + sliderHeight - 16,
+            sliderRect.Width - barMargin * 2,
+            barHeight
+        );
+
+        // background bar
+        _spriteBatch.Draw(_pixel, barRect, Color.White * 0.25f);
+
+        // filled portion
+        float t = (_ctxItem.Volume - Preferences.VolumeMin) / (Preferences.VolumeMax - Preferences.VolumeMin);
+        t = MathHelper.Clamp(t, 0f, 1f);
+
+        var fillRect = new Rectangle(
+            barRect.X,
+            barRect.Y,
+            (int)(barRect.Width * t),
+            barRect.Height
+        );
+
+        _spriteBatch.Draw(_pixel, fillRect, Color.White);
 
         _spriteBatch.End();
     }
 
+    private bool LeftClick() => _mouse.LeftButton == ButtonState.Pressed && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
+    private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
+
     private void OnResized() {
-        _menu.Parameters["AspectRatio"].SetValue((float)ScreenWidth / ScreenHeight);
+        _menu.Parameters["AspectRatio"]?.SetValue((float)ScreenWidth / ScreenHeight);
         BuildSoundboardGrid();
     }
 
     private void CalculateButtonColors(Color bg) {
-        bool white = bg.R + bg.G + bg.B > 128 * 3;
+        bool white = bg.R + bg.G + bg.B > 384; // try 400 maybe?
         Color light = white ? Color.Black : Color.White;
         Color dark = white ? Color.White : Color.Black;
         _btn = Color.Lerp(bg, light, 0.1f);
         _btnHover = Color.Lerp(bg, light, 0.05f);
         _btnPressed = Color.Lerp(bg, dark, 0.05f);
+        _ctxMenu = Color.Lerp(bg, dark, 0.5f);
+        _ctxMenu.A = 230;
+        _ctxHover = light * 0.1f;
+        _ctxPressed = dark * 0.2f;
     }
 
     public void AddSound(SoundboardItem item) {
@@ -261,12 +448,28 @@ public class Main : Game {
             using var bw = new BinaryWriter(fs);
             bw.WriteStringOrNull(_preferredInput);
             bw.WriteStringOrNull(_preferredOutput);
+            bw.WriteStringOrNull(_preferredRegularOutput);
+            bw.Write(_hasOwnCable);
             foreach (var i in _sounds)
                 i.WriteBinary(bw);
         }
     }
 
     private void ImportSound(string path) {
+        foreach (var i in _sounds) {
+            if (i.SoundLocation == path) {
+                Log.Warn($"Attempted to add a duplicate sound with path of '{path}'");
+                Task.Run(async () => {
+                    await MessageBox.Show(
+                        "Duplicate Sound",
+                        "You cannot have two sounds with the same path",
+                        ["Close"]
+                    );
+                }).Start();
+                return;
+            }
+        }
+
         var item = new SoundboardItem {
             Name = Path.GetFileNameWithoutExtension(path),
             SoundLocation = path,
@@ -277,20 +480,23 @@ public class Main : Game {
         BuildSoundboardGrid();
     }
 
-    public static void ShowInstallPrompt() {
+    public void ShowInstallPrompt() {
         Task.Run(async () => {
             var result = await MessageBox.Show(
-                "VB-Audio Virtual Cable was not detected.\n\n" +
-                "This application requires VB-Audio Virtual Cable to route audio correctly.\n\n" +
-                "Would you like to open the download page now?",
                 "VB-Audio Cable Not Found",
-                ["Yes", "No"]
+                "VB-Audio Virtual Cable was not detected.\n\n" +
+                "This application highly recommends using VB-Audio Virtual Cable to route audio correctly.\n\n" +
+                "Would you like to open the download page now?",
+                ["Yes", "No", "No, I have my own virtual cable"]
             );
             if (result == 0) {
                 Process.Start(new ProcessStartInfo {
                     FileName = "https://vb-audio.com/Cable/",
                     UseShellExecute = true
                 });
+            } else if (result == 2) {
+                _hasOwnCable = true;
+                SaveSounds();
             }
         }).Start();
     }

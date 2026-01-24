@@ -6,7 +6,6 @@ using Hyleus.Soundboard.Audio.Codecs;
 using Hyleus.Soundboard.Audio.VoiceChangers;
 using Hyleus.Soundboard.Framework;
 using Hyleus.Soundboard.Framework.Structs;
-using SharpJaad.AAC.Syntax;
 using SoundFlow.Abstracts.Devices;
 using SoundFlow.Backends.MiniAudio;
 using SoundFlow.Components;
@@ -23,13 +22,14 @@ public class AudioEngine : IDisposable {
     private readonly List<SoundPlayer> _activeSfxs = [];
     private readonly AudioCaptureDevice _micDevice;
     private readonly AudioPlaybackDevice _playbackDevice;
+    private readonly AudioPlaybackDevice _regularPlaybackDevice;
     private float _sfxVolume;
     private float _micVolume;
 
-    public float SfxVolume { get => _sfxVolume; set { _sfxVolume = value; _activeSfxs.ForEach(sfx => sfx.Volume = _sfxVolume); } }
-    public float MicVolume { get => _micVolume; set { _micVolume = value; if (_micPlayer != null) _micPlayer.Volume = _sfxVolume; } }
+    public float SfxVolume { get => _sfxVolume; set { _activeSfxs.ForEach(sfx => sfx.Volume += 1 + (value - _sfxVolume)); _sfxVolume = value; } }
+    public float MicVolume { get => _micVolume; set { _micVolume = value; if (_micPlayer != null) _micPlayer.Volume = _micVolume; } }
 
-    public AudioEngine(int sampleRate = 44100, float sfxVolume = 3f, float micVolume = 2.0f) {
+    public AudioEngine(bool hasOwnCable = false, int sampleRate = 44100, float sfxVolume = 3f, float micVolume = 2.0f) {
         // initalize SoundFlow engine (miniaudio backend)
         _engine = new MiniAudioEngine();
         _format = new() { Channels = 2, SampleRate = sampleRate, Format = SampleFormat.F32 };
@@ -38,11 +38,16 @@ public class AudioEngine : IDisposable {
         MicVolume = micVolume;
 
         _engine.UpdateAudioDevicesInfo();
-        //DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase));
+        //if (!hasOwnCable)
+        //    DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase));
+        //else
         DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.IsDefault);
         if (deviceInfo == null) {
-            Log.Error("VB-Audio Cable playback device not found. Failed to initialize AudioEngine.");
-            throw new Exception("VB-Audio Cable playback device not found. Failed to initialize AudioEngine.");
+            var msg = hasOwnCable ?
+                "Default playback device not found. Failed to initialize AudioEngine." :
+                "VB-Audio Cable playback device not found. Failed to initialize AudioEngine.";
+            Log.Error(msg);
+            throw new Exception(msg);
         }
 
         Log.Info(deviceInfo);
@@ -88,7 +93,16 @@ public class AudioEngine : IDisposable {
         _engine.RegisterCodecFactory(new OggVorbisCodecFactory());
     }
 
-    public void PlaySound(string filePath, float volume = 1.0f) {
+    public void PlaySound(SoundboardItem sound) {
+        var player = PlaySound(sound.SoundLocation, sound.Volume);
+        if (player == null)
+            return;
+        void vol(float oldVal, float newVal) => player.Volume = newVal * _sfxVolume;
+        sound.OnVolumeChanged += vol;
+        player.PlaybackEnded += (s, e) => sound.OnVolumeChanged -= vol;
+    }
+
+    public SoundPlayer PlaySound(string filePath, float volume = 1.0f) {
         try {
             // open file stream to get data
             var fs = File.OpenRead(filePath);
@@ -128,8 +142,10 @@ public class AudioEngine : IDisposable {
 
                 fs.Dispose();
             };
+            return filePlayer;
         } catch (Exception ex) {
             Log.Error($"Error playing sound '{filePath}': {ex.Message}");
+            return null;
         }
     }
 
