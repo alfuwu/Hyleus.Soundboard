@@ -27,6 +27,7 @@ public static class Preferences {
     private static bool _safeToSave = true;
 
     // inner fields
+    private static int _audioFrequency = 48000;
     private static Locale _locale = Locale.English;
     private static Color _bgColor = new(50, 46, 47);
     private static Color _fxColor1 = new(54, 48, 49);
@@ -41,8 +42,14 @@ public static class Preferences {
     private static bool _playMicToHeadphones = false;
     private static float _volumeMin = 0.0f;
     private static float _volumeMax = 10.0f;
+    private static float _speedMin = float.Epsilon;
+    private static float _speedMax = 3.0f;
+    private static bool _closeCtxMenuOnScroll = false;
+    private static bool _preventScrollWhenCtxMenuIsOpen = true;
 
     // properties
+    [Description("The frequency that sounds and microphone input will be played/recorded at, in hertz. Requires a restart.\nGenerally, 44.1kHz and 48kHz will be the best options, as they are the most common frequencies that audio is recorded at, and thus do not need resampling.\nIt is recommended to only change this value if the majority of your sounds are recorded at a different frequency (e.g. 48kHz).\nWARNING: Frequencies not supported by your audio devices (e.g. 27kHz) will output pure silence. Make sure that you're using a frequency that's supported by your audio device (normally, this will be 16kHz, 24kHz, 44.1kHz, and 48kHz).")]
+    public static int AudioFrequency { get => _audioFrequency; set => Update(nameof(AudioFrequency), ref _audioFrequency, value); }
     [Description("""
         The language used in-game.
         Supported locales:
@@ -78,10 +85,18 @@ public static class Preferences {
     public static bool PlayVoiceChangerToSystem { get => _playVoiceChangerToHeadphones; set => Update(nameof(PlayVoiceChangerToSystem), ref _playVoiceChangerToHeadphones, value); }
     [Description("Plays all microphone input to your audio device.")]
     public static bool PlayMicToSystem { get => _playMicToHeadphones; set => Update(nameof(PlayMicToSystem), ref _playMicToHeadphones, value); }
-    [Description("The minimum value you can set audio to using the context menu.")]
+    [Description("The minimum value you can set audio volume to using the context menu.")]
     public static float VolumeMin { get => _volumeMin; set => Update(nameof(VolumeMin), ref _volumeMin, value); }
-    [Description("The maximum value you can set audio to using the context menu.")]
+    [Description("The maximum value you can set audio volume to using the context menu.")]
     public static float VolumeMax { get => _volumeMax; set => Update(nameof(VolumeMax), ref _volumeMax, value); }
+    [Description("The minimum value you can set audio playback speed to using the context menu.")]
+    public static float SpeedMin { get => _speedMin; set => Update(nameof(SpeedMin), ref _speedMin, value); }
+    [Description("The maximum value you can set audio playback speed to using the context menu.\nWARNING: Values above 3.0 may cause crashes. Proceed with caution.")]
+    public static float SpeedMax { get => _speedMax; set => Update(nameof(SpeedMax), ref _speedMax, value); }
+    [Description("Determines whether or not the context menu will automatically close when you use the scroll wheel.")]
+    public static bool CloseContextMenuOnScroll { get => _closeCtxMenuOnScroll; set => Update(nameof(CloseContextMenuOnScroll), ref _closeCtxMenuOnScroll, value); }
+    [Description("Prevents using the scroll wheel while the context menu is open.")]
+    public static bool PreventScrollWhenContextMenuIsOpen { get => _preventScrollWhenCtxMenuIsOpen; set => Update(nameof(PreventScrollWhenContextMenuIsOpen), ref _preventScrollWhenCtxMenuIsOpen, value); }
 
     /// <summary>
     /// Updates a preference field and invokes the <see cref="OnPreferenceUpdate"/> event.
@@ -99,6 +114,7 @@ public static class Preferences {
     }
 
     private static void LoadDefaults() {
+        AudioFrequency = 44100;
         CurrentLocale = Locale.English;
         BackgroundColor = new(50, 46, 47);
         EffectsColor1 = new(54, 48, 49);
@@ -113,6 +129,10 @@ public static class Preferences {
         PlayMicToSystem = false;
         VolumeMin = 0.0f;
         VolumeMax = 10.0f;
+        SpeedMin = float.Epsilon;
+        SpeedMax = 3.0f;
+        CloseContextMenuOnScroll = false;
+        PreventScrollWhenContextMenuIsOpen = true;
     }
 
     #region IO

@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Hyleus.Soundboard.Audio;
@@ -26,12 +25,20 @@ class Program {
 }
 
 public class Main : Game {
+    private const ushort FILE_VERSION = 0;
+    private const int menuWidth = 220;
+    private const int menuItemHeight = 36;
+    private const int horizontalPadding = 18;
+    private const int sliderHeight = 48;
+    private readonly (string name, Action onClick)[] _menuItems;
+
     private readonly GraphicsDeviceManager _graphics;
     private SpriteBatch _spriteBatch;
     private AudioEngine _audio;
     private KeyboardState _previousKeyboard;
+    private readonly List<Category> _categories = [];
     private readonly List<SoundboardItem> _sounds = [];
-    private readonly List<SoundboardButton> _buttons = [];
+    private SoundboardButton[] _buttons = [];
     private MouseState _previousMouse;
     private MouseState _mouse;
     private SpriteFont _font;
@@ -52,7 +59,9 @@ public class Main : Game {
     private Point _ctxPos;
     private SoundboardItem _ctxItem = null;
     private Rectangle? _ctxRect = null;
-    private bool _draggingVolumeSlider = false;
+    private readonly List<ContextMenuSlider> _ctxSliders = [];
+    private ContextMenuSlider _activeSlider = null;
+    private bool _wasActive;
 
     public static Vector2I WindowSize {
         get => new(Instance._graphics.PreferredBackBufferWidth, Instance._graphics.PreferredBackBufferHeight);
@@ -62,7 +71,17 @@ public class Main : Game {
     public static int ScreenWidth { get; set; } = 1280;
     public static int ScreenHeight { get; set; } = 720;
 
+    private int _categoryListSize = 96;
+    private int CategoryListSize {
+        get => _categoryListSize;
+        set {
+            _categoryListSize = value;
+            BuildSoundboardGrid();
+        }
+    }
+    private int _buttonSize;
     private int _currentColumns;
+    private int Rows => _currentColumns <= 0 ? 0 : _sounds.Count / _currentColumns;
 
     public static Main Instance { get; private set; }
 
@@ -72,20 +91,19 @@ public class Main : Game {
     // continuous update stuff
     private SDL_EventFilter _filter = null;
     private bool _started = false;
-    private bool _isMaximized = false;
 #if OS_WINDOWS
     [DllImport("user32.dll", ExactSpelling = true)]
 #pragma warning disable IDE0079 // Remove unnecessary suppression
 #pragma warning disable SYSLIB1054 // Use 'LibraryImportAttribute' instead of 'DllImportAttribute' to generate P/Invoke marshalling code at compile time
     private static extern IntPtr SetTimer(IntPtr hWnd, IntPtr nIDEvent, uint uElapse, TimerProc lpTimerFunc);
-#endif
-    private delegate void TimerProc(IntPtr hWnd, uint uMsg, IntPtr nIDEvent, uint dwTime);
-
     private IntPtr _handle;
+    private delegate void TimerProc(IntPtr hWnd, uint uMsg, IntPtr nIDEvent, uint dwTime);
     private TimerProc _timerProc = null;
+#endif
 
     private int _manualTickCount = 0;
     private bool _manualTick;
+    private int _scrollPosition = 0;
 
     public Main() {
         if (Instance != null)
@@ -114,11 +132,20 @@ public class Main : Game {
                 ImportSound(file);
         };
         Window.AllowUserResizing = true;
+
+        _menuItems = [
+            ("Play", () => _audio.PlaySound(_ctxItem)),
+            ("Edit", () => {}),
+            ("Delete", () => {
+                RemoveSound(_ctxItem);
+                BuildSoundboardGrid();
+            })
+        ];
     }
 
     protected override void Initialize() {
         try {
-            _audio = new AudioEngine(_hasOwnCable, 48000);
+            _audio = new AudioEngine(_hasOwnCable, Preferences.AudioFrequency);
         } catch (Exception e) {
             if (e.Message.Contains("VB-Audio Cable")) {
                 ShowInstallPrompt();
@@ -127,11 +154,13 @@ public class Main : Game {
             return;
         }
 
+        SDL_SetWindowMinimumSize(Window.Handle, 480, 270);
+
         _filter = new SDL_EventFilter(HandleSDLEvent);
         SDL_AddEventWatch(_filter, IntPtr.Zero);
 
-        _timerProc = BackupTick;
 #if OS_WINDOWS
+        _timerProc = BackupTick;
         _handle = SetTimer(IntPtr.Zero, IntPtr.Zero, 1, _timerProc);
 #endif
 
@@ -148,6 +177,7 @@ public class Main : Game {
         if (File.Exists(SoundboardData)) {
             using var fs = File.OpenRead(SoundboardData);
             using var br = new BinaryReader(fs);
+            int fileVer = br.ReadUInt16();
             _preferredInput = br.ReadStringOrNull();
             _preferredOutput = br.ReadStringOrNull();
             _preferredRegularOutput = br.ReadStringOrNull();
@@ -182,6 +212,8 @@ public class Main : Game {
         OnResized();
     }
 
+    SettingsWindow settings = null;
+
     protected override void Update(GameTime gameTime) {
         _started = true;
         if (!_manualTick)
@@ -197,15 +229,15 @@ public class Main : Game {
 
         _mouse = Mouse.GetState();
 
+        bool skipPressed = !_wasActive && IsActive;
         bool left = LeftClick() &&
-            _previousMouse.LeftButton == ButtonState.Released;
+            (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
         if ((left ||
             _mouse.RightButton == ButtonState.Pressed &&
-            _previousMouse.RightButton == ButtonState.Released) &&
+            (_previousMouse.RightButton == ButtonState.Released || skipPressed)) &&
             IsActive
         ) {
-            _ctxItem = null;
-            _ctxRect = null;
+            ResetCtxMenu();
 
             foreach (var button in _buttons) {
                 if (MouseHover(button.Bounds)) {
@@ -215,43 +247,74 @@ public class Main : Game {
                     } else {
                         _ctxPos = _mouse.Position;
                         _ctxItem = button.Item;
+                        BuildContextSliders(_ctxItem);
                     }
                     break;
                 }
             }
+
+            var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
+            if (MouseHover(bounds)) {
+                Log.Info(Window);
+                settings = new(Window, GraphicsDevice, Window.ClientBounds.Width, Window.ClientBounds.Height);
+                settings.OnDraw += (window, sb) => {
+                    //GraphicsDevice.Clear(Color.Black);
+                    /*sb.Begin();
+                    sb.Draw(
+                        _pixel,
+                        new Rectangle(0, 0, window.ClientBounds.Width, window.ClientBounds.Height),
+                        Color.White
+                    );
+                    sb.End();*/
+                };
+                
+                //SettingsWindow.CreateGraphicsDevice(settings.Handle, 400, 400);
+            }
         }
         if (_ctxItem != null && _ctxRect.HasValue && IsActive) {
-            Rectangle sliderRect = new(
-                _ctxRect.Value.X,
-                _ctxRect.Value.Y + (_ctxRect.Value.Height - 48),
-                _ctxRect.Value.Width,
-                48
-            );
+            left = _mouse.LeftButton == ButtonState.Pressed &&
+                    (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
+            for (int i = 0; i < _menuItems.Length; i++) {
+                Rectangle rect = GetMenuItemRect(i);
 
-            if (_mouse.LeftButton == ButtonState.Pressed && sliderRect.Contains(_mouse.Position))
-                _draggingVolumeSlider = true;
-            else if (_mouse.LeftButton == ButtonState.Released) {
-                _draggingVolumeSlider = false;
-                SaveSounds();
+                if (left && rect.Contains(_mouse.Position)) {
+                    _menuItems[i].onClick.Invoke();
+                    ResetCtxMenu();
+                    break;
+                }
             }
 
-            if (_draggingVolumeSlider) {
+            foreach (var slider in _ctxSliders) {
+                Rectangle sliderRect = GetSliderRect(slider);
+
+                if (left && sliderRect.Contains(_mouse.Position)) {
+                    _activeSlider = slider;
+                    slider.IsDragging = true;
+                }
+            }
+
+            if (_activeSlider != null) {
+                Rectangle sliderRect = GetSliderRect(_activeSlider);
+
                 int barX = sliderRect.X + 16;
-                int barWidth = sliderRect.Width - 32;
+                float barWidth = sliderRect.Width - 32;
 
-                float normalized =
-                    (_mouse.X - barX) / (float)barWidth;
-
-                normalized = MathHelper.Clamp(normalized, 0f, 1f);
-
-                float volume =
-                    Preferences.VolumeMin + normalized * (Preferences.VolumeMax - Preferences.VolumeMin);
-
-                _ctxItem.Volume = volume;
+                float t = (_mouse.X - barX) / barWidth;
+                _activeSlider.SetFromNormalized(t);
             }
         }
 
+        if (_mouse.LeftButton == ButtonState.Released && _activeSlider != null) {
+            _activeSlider.IsDragging = false;
+            _activeSlider = null;
+            SaveSounds();
+        }
+
+        if (_mouse.ScrollWheelValue != _previousMouse.ScrollWheelValue && (!Preferences.PreventScrollWhenContextMenuIsOpen || _ctxItem == null))
+            CalculateScroll();
+
         _previousMouse = _mouse;
+        _wasActive = IsActive;
 
         _menu.Parameters["Time"]?.SetValue((float)gameTime.TotalGameTime.TotalSeconds);
         _menu.Parameters["Mouse"]?.SetValue(new Vector4(_mouse.X, _mouse.Y, _mouse.LeftButton == ButtonState.Pressed && IsActive ? 1 : 0, 0));
@@ -270,16 +333,22 @@ public class Main : Game {
         );
         _spriteBatch.End();
 
-        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(0, 0, CategoryListSize, ScreenHeight),
+            new Color(20, 19, 19, 176)
+        );
+        _spriteBatch.End();
 
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
         foreach (var button in _buttons) {
-            if (button.Icon == null)
-                _spriteBatch.Draw(
-                    _pixel,
-                    button.Bounds,
-                    MouseHover(button.Bounds) ? LeftClick() ?
-                        _btnPressed : _btnHover : _btn
-                );
+            _spriteBatch.Draw(
+                _pixel,
+                button.Bounds,
+                MouseHover(button.Bounds) ? LeftClick() ?
+                    _btnPressed : _btnHover : _btn
+            );
 
             Texture2D icon = button.Icon ?? _defaultIcon;
             _spriteBatch.Draw(
@@ -289,23 +358,28 @@ public class Main : Game {
                     Color.Gray : Color.DarkGray : Color.White
             );
         }
+        var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
+        _spriteBatch.Draw(
+            _pixel,
+            bounds,
+            MouseHover(bounds) ? LeftClick() ?
+                _btnPressed : _btnHover : _btn
+        );
         _spriteBatch.End();
 
         if (_ctxItem != null)
             DrawContextMenu(_ctxPos);
+        
+        if (settings != null && settings.CanDraw()) {
+            settings.Draw();
+            settings.FinishDraw();
+        }
     }
 
     private void DrawContextMenu(Point position) {
-        const int menuWidth = 220;
-        const int menuItemHeight = 36;
-        const int horizontalPadding = 18;
-
-        string[] menuItems = ["Play", "Edit", "Delete"];
-        int sliderHeight = 48;
-
         int totalHeight =
-            menuItemHeight * menuItems.Length +
-            sliderHeight;
+            menuItemHeight * _menuItems.Length +
+            sliderHeight * _ctxSliders.Count;
 
         _ctxRect = new Rectangle(
             position.X,
@@ -325,8 +399,8 @@ public class Main : Game {
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
 
         // menu items
-        for (int i = 0; i < menuItems.Length; i++) {
-            Rectangle itemRect = new(position.X, position.Y + i * menuItemHeight, menuWidth, menuItemHeight);
+        for (int i = 0; i < _menuItems.Length; i++) {
+            Rectangle itemRect = GetMenuItemRect(i);
             Color hover = itemRect.Contains(_mouse.Position) ? _mouse.LeftButton == ButtonState.Pressed ?
                 _ctxPressed : _ctxHover : Color.Transparent;
             _spriteBatch.Draw(_pixel, itemRect, hover);
@@ -340,7 +414,7 @@ public class Main : Game {
             // text
             _spriteBatch.DrawString(
                 _font,
-                menuItems[i],
+                _menuItems[i].name,
                 new Vector2(itemRect.X + horizontalPadding, itemRect.Y + 8),
                 Color.White,
                 0,
@@ -353,71 +427,98 @@ public class Main : Game {
 
         var divider = new Rectangle(
             position.X + 12,
-            position.Y + menuItemHeight * menuItems.Length - 1,
+            position.Y + menuItemHeight * _menuItems.Length - 1,
             menuWidth - 24,
             2
         );
 
         _spriteBatch.Draw(_pixel, divider, Color.White * 0.08f);
 
-        var sliderRect = new Rectangle(
-            position.X,
-            position.Y + menuItemHeight * menuItems.Length,
-            menuWidth,
-            sliderHeight
-        );
+        _ctxSliders.RemoveAll(slider => slider == null);
+        foreach (var slider in _ctxSliders) {
+            Rectangle rect = GetSliderRect(slider);
 
-        // hover background
-        bool sliderHover = sliderRect.Contains(_mouse.Position);
-        _spriteBatch.Draw(
-            _pixel,
-            sliderRect,
-            sliderHover ? _ctxHover : Color.Transparent
-        );
+            // hover background
+            bool hover = rect.Contains(_mouse.Position);
+            _spriteBatch.Draw(_pixel, rect, hover ? _ctxHover : Color.Transparent);
 
-        // label
-        _spriteBatch.DrawString(
-            _font,
-            $"Volume: {_ctxItem.Volume:0.00}",
-            new Vector2(sliderRect.X + horizontalPadding, sliderRect.Y + 6),
-            Color.White
-        );
+            // label
+            _spriteBatch.DrawString(
+                _font,
+                $"{slider.Label}: {slider.GetValue() * 100:n0}%",
+                new Vector2(rect.X + 18, rect.Y + 6),
+                Color.White
+            );
 
-        // slider bar
-        int barMargin = 16;
-        int barHeight = 6;
-        var barRect = new Rectangle(
-            sliderRect.X + barMargin,
-            sliderRect.Y + sliderHeight - 16,
-            sliderRect.Width - barMargin * 2,
-            barHeight
-        );
+            // slider bar
+            int barMargin = 16;
+            int barHeight = 6;
+            var barRect = new Rectangle(
+                rect.X + barMargin,
+                rect.Y + rect.Height - 16,
+                rect.Width - barMargin * 2,
+                barHeight
+            );
 
-        // background bar
-        _spriteBatch.Draw(_pixel, barRect, Color.White * 0.25f);
+            // background bar
+            _spriteBatch.Draw(_pixel, barRect, Color.White * 0.25f);
 
-        // filled portion
-        float t = (_ctxItem.Volume - Preferences.VolumeMin) / (Preferences.VolumeMax - Preferences.VolumeMin);
-        t = MathHelper.Clamp(t, 0f, 1f);
+            // filled portion
+            var fillRect = new Rectangle(
+                barRect.X,
+                barRect.Y,
+                (int)(barRect.Width * slider.NormalizedValue),
+                barRect.Height
+            );
 
-        var fillRect = new Rectangle(
-            barRect.X,
-            barRect.Y,
-            (int)(barRect.Width * t),
-            barRect.Height
-        );
-
-        _spriteBatch.Draw(_pixel, fillRect, Color.White);
-
+            _spriteBatch.Draw(_pixel, fillRect, Color.White);
+        }
         _spriteBatch.End();
     }
 
     private bool LeftClick() => _mouse.LeftButton == ButtonState.Pressed && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
     private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
 
+    private Rectangle GetMenuItemRect(int i) => new(_ctxRect.Value.X, _ctxRect.Value.Y + i * menuItemHeight, menuWidth, menuItemHeight);
+    private Rectangle GetSliderRect(ContextMenuSlider slider) {
+        int index = _ctxSliders.IndexOf(slider);
+
+        int y =
+            _ctxRect.Value.Y +
+            menuItemHeight * _menuItems.Length +
+            index * sliderHeight;
+
+        return new Rectangle(
+            _ctxRect.Value.X,
+            y,
+            _ctxRect.Value.Width,
+            sliderHeight
+        );
+    }
+
+    private void ResetCtxMenu() {
+        _ctxItem = null;
+        _ctxRect = null;
+        _ctxSliders.Clear();
+    }
+
     private void OnResized() {
         _menu.Parameters["AspectRatio"]?.SetValue((float)ScreenWidth / ScreenHeight);
+        CalculateScroll();
         BuildSoundboardGrid();
+    }
+
+    private void CalculateScroll() {
+        int offset = (int)((_previousMouse.ScrollWheelValue - _mouse.ScrollWheelValue) / 10f);
+        int newScroll = int.Clamp(_scrollPosition + offset, 0, _buttons.Length > 0 ? Rows * _buttonSize : 0);
+        int delta = newScroll - _scrollPosition;
+        _scrollPosition = newScroll;
+        foreach (var btn in _buttons)
+            btn.Bounds.Y += delta;
+        if (Preferences.CloseContextMenuOnScroll)
+            ResetCtxMenu();
+        else
+            _ctxPos.Y += delta;
     }
 
     private void CalculateButtonColors(Color bg) {
@@ -433,9 +534,18 @@ public class Main : Game {
         _ctxPressed = dark * 0.2f;
     }
 
-    public void AddSound(SoundboardItem item) {
-        _sounds.Add(item);
+    public void AddSound(SoundboardItem sound) {
+        _sounds.Add(sound);
         SaveSounds();
+        Log.Info($"Added sound '{sound.Name}'");
+    }
+    public void RemoveSound(SoundboardItem sound) {
+        if (_sounds.Remove(sound)) {
+            SaveSounds();
+            Log.Info($"Successfully deleted sound '{sound.Name}'");
+        } else {
+            Log.Info($"Failed to delete sound '{sound.Name}'");
+        }
     }
     public void RemoveSoundAt(int i) {
         _sounds.RemoveAt(i);
@@ -444,8 +554,9 @@ public class Main : Game {
     public IReadOnlyList<SoundboardItem> Sounds => _sounds.AsReadOnly();
     public void SaveSounds() {
         lock (_sounds) {
-            using var fs = File.OpenWrite(SoundboardData);
+            using var fs = File.Create(SoundboardData);
             using var bw = new BinaryWriter(fs);
+            bw.Write(FILE_VERSION);
             bw.WriteStringOrNull(_preferredInput);
             bw.WriteStringOrNull(_preferredOutput);
             bw.WriteStringOrNull(_preferredRegularOutput);
@@ -462,7 +573,7 @@ public class Main : Game {
                 Task.Run(async () => {
                     await MessageBox.Show(
                         "Duplicate Sound",
-                        "You cannot have two sounds with the same path",
+                        $"You cannot have two sounds with the same path:\n{path}",
                         ["Close"]
                     );
                 }).Start();
@@ -472,8 +583,7 @@ public class Main : Game {
 
         var item = new SoundboardItem {
             Name = Path.GetFileNameWithoutExtension(path),
-            SoundLocation = path,
-            Volume = 1.0f
+            SoundLocation = path
         };
 
         AddSound(item);
@@ -483,7 +593,7 @@ public class Main : Game {
     public void ShowInstallPrompt() {
         Task.Run(async () => {
             var result = await MessageBox.Show(
-                "VB-Audio Cable Not Found",
+                "VB-Audio Virtual Cable Not Found",
                 "VB-Audio Virtual Cable was not detected.\n\n" +
                 "This application highly recommends using VB-Audio Virtual Cable to route audio correctly.\n\n" +
                 "Would you like to open the download page now?",
@@ -501,37 +611,59 @@ public class Main : Game {
         }).Start();
     }
 
-    public void BuildSoundboardGrid() {
-        _buttons.Clear();
+    private void BuildContextSliders(SoundboardItem item) {
+        _ctxSliders.Clear();
 
-        int availableWidth = ScreenWidth - Preferences.Margin * 2;
+        _ctxSliders.Add(new ContextMenuSlider {
+            Label = "Volume",
+            Min = Preferences.VolumeMin,
+            Max = Preferences.VolumeMax,
+            GetValue = () => item.Volume,
+            SetValue = v => item.Volume = v
+        });
+
+        _ctxSliders.Add(new ContextMenuSlider {
+            Label = "Speed",
+            Min = Preferences.SpeedMin,
+            Max = Preferences.SpeedMax,
+            GetValue = () => item.Speed,
+            SetValue = v => item.Speed = v
+        });
+    }
+
+    public void BuildSoundboardGrid() {
+        int availableWidth = ScreenWidth - Preferences.Margin * 2 - CategoryListSize;
 
         int maxColumns = int.Min(
             int.Max(1,
                 (availableWidth + Preferences.Padding) / (Preferences.MinButtonSize + Preferences.Padding)
             ),
-            _sounds.Count
+            int.Max(1, _sounds.Count)
         );
 
-        int buttonSize = (availableWidth - Preferences.Padding * (maxColumns - 1)) / maxColumns;
-        buttonSize = int.Clamp(buttonSize, Preferences.MinButtonSize, Preferences.MaxButtonSize);
-        _rounded.Parameters["TextureSize"].SetValue(new Vector2(buttonSize, buttonSize));
+        _buttonSize = int.Clamp(
+            (availableWidth - Preferences.Padding * (maxColumns - 1)) / maxColumns,
+            Preferences.MinButtonSize, Preferences.MaxButtonSize
+        );
+        _rounded.Parameters["TextureSize"].SetValue(new Vector2(_buttonSize, _buttonSize));
 
         int columns = int.Max(1,
-            (availableWidth + Preferences.Padding) / (buttonSize + Preferences.Padding)
+            (availableWidth + Preferences.Padding) / (_buttonSize + Preferences.Padding)
         );
 
         _currentColumns = columns;
+
+        var buttons = new SoundboardButton[_sounds.Count];
 
         for (int i = 0; i < _sounds.Count; i++) {
             int col = i % columns;
             int row = i / columns;
 
             var bounds = new Rectangle(
-                Preferences.Margin + col * (buttonSize + Preferences.Padding),
-                Preferences.Margin + row * (buttonSize + Preferences.Padding),
-                buttonSize,
-                buttonSize
+                Preferences.Margin + col * (_buttonSize + Preferences.Padding) + CategoryListSize,
+                Preferences.Margin + row * (_buttonSize + Preferences.Padding) + _scrollPosition,
+                _buttonSize,
+                _buttonSize
             );
 
             var sound = _sounds[i];
@@ -543,12 +675,14 @@ public class Main : Game {
                 icon = Texture2D.FromStream(GraphicsDevice, fs);
             }
 
-            _buttons.Add(new SoundboardButton {
+            buttons[i] = new SoundboardButton {
                 Item = sound,
                 Bounds = bounds,
                 Icon = icon
-            });
+            };
         }
+
+        _buttons = buttons;
     }
 
     private unsafe int HandleSDLEvent(IntPtr userdata, IntPtr ptr) {
@@ -569,12 +703,6 @@ public class Main : Game {
                         break;
                     case SDL_WindowEventID.SDL_WINDOWEVENT_MOVED:
                         break;
-                    case SDL_WindowEventID.SDL_WINDOWEVENT_MAXIMIZED:
-                        _isMaximized = true;
-                        break;
-                    case SDL_WindowEventID.SDL_WINDOWEVENT_RESTORED:
-                        _isMaximized = false;
-                        break;
                 }
                 break;
         }
@@ -582,6 +710,7 @@ public class Main : Game {
         return 0;
     }
 
+#if OS_WINDOWS
     private void BackupTick(IntPtr hWnd, uint uMsg, IntPtr nIDEvent, uint dwTime) {
         if (_started) {
             if (_manualTickCount > 2) {
@@ -592,4 +721,5 @@ public class Main : Game {
             _manualTickCount++;
         }
     }
+#endif
 }

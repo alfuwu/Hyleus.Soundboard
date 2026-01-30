@@ -41,6 +41,7 @@ public class AudioEngine : IDisposable {
         //if (!hasOwnCable)
         //    DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.Name.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase));
         //else
+        //DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.Name.Contains("Loopback Analog Stereo"));
         DeviceInfo? deviceInfo = _engine.PlaybackDevices.FirstOrDefault(d => d.IsDefault);
         if (deviceInfo == null) {
             var msg = hasOwnCable ?
@@ -76,7 +77,7 @@ public class AudioEngine : IDisposable {
         //_micPlayer.AddModifier(new PitchModifier2(2.0f));
         //_micPlayer.AddModifier(new ChorusModifier(_format));
         //_micPlayer.AddModifier(new AutoTuneModifier(sampleRate));
-        _micPlayer.AddModifier(new RobotModifier(gain: 2.0f));
+        _micPlayer.AddModifier(new RobotModifier(gain: 0.6f));
 
         // add mic player to the global mixer
         _playbackDevice.MasterMixer.AddComponent(_micPlayer);
@@ -94,15 +95,20 @@ public class AudioEngine : IDisposable {
     }
 
     public void PlaySound(SoundboardItem sound) {
-        var player = PlaySound(sound.SoundLocation, sound.Volume);
+        var player = PlaySound(sound.SoundLocation, sound.Volume, sound.Speed);
         if (player == null)
             return;
         void vol(float oldVal, float newVal) => player.Volume = newVal * _sfxVolume;
+        void spd(float oldVal, float newVal) => player.PlaybackSpeed = newVal;
         sound.OnVolumeChanged += vol;
-        player.PlaybackEnded += (s, e) => sound.OnVolumeChanged -= vol;
+        sound.OnSpeedChanged += spd;
+        player.PlaybackEnded += (s, e) => {
+            sound.OnVolumeChanged -= vol;
+            sound.OnSpeedChanged -= spd;
+        };
     }
 
-    public SoundPlayer PlaySound(string filePath, float volume = 1.0f) {
+    public SoundPlayer PlaySound(string filePath, float volume = 1.0f, float playbackSpeed = 1.0f) {
         try {
             // open file stream to get data
             var fs = File.OpenRead(filePath);
@@ -115,7 +121,8 @@ public class AudioEngine : IDisposable {
             // create a player for that file
             var filePlayer = new SoundPlayer(_engine, _format, fileProvider) {
                 Name = Path.GetFileName(filePath),
-                Volume = SfxVolume * volume
+                Volume = SfxVolume * volume,
+                PlaybackSpeed = playbackSpeed
             };
             // wav, flac, and mp3 are automagically resampled to the correct sr as they're part of MiniAudio's internal library
             // TODO: make it so that PlaybackSpeed isn't used for our codecs because it's quite bad

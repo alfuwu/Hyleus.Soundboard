@@ -24,6 +24,20 @@ public static class IEnumerableExtensions {
         return false;
     }
 
+    public static T Find<T>(this IEnumerable<T> enumerable, Predicate<T> pred) where T : class {
+        foreach (var item in enumerable)
+            if (pred(item))
+                return item;
+        return null;
+    }
+
+    public static T? FindStruct<T>(this IEnumerable<T> enumerable, Predicate<T> pred) where T : struct {
+        foreach (var item in enumerable)
+            if (pred(item))
+                return item;
+        return null;
+    }
+
     public static T GetKey<T, V>(this Dictionary<T, V> dict, V value) {
         foreach (var kvp in dict)
             if (kvp.Value?.Equals(value) == true)

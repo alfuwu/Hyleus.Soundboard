@@ -1,0 +1,17 @@
+[*.cs]
+csharp_new_line_before_open_brace = none
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false
+csharp_new_line_before_open_brace_accessors = none
+csharp_new_line_before_open_brace_anonymous_methods = none
+csharp_new_line_before_open_brace_anonymous_types = none
+csharp_new_line_before_open_brace_control_blocks = none
+csharp_new_line_before_open_brace_events = none
+csharp_new_line_before_open_brace_indexers = none
+csharp_new_line_before_open_brace_lambdas = none
+csharp_new_line_before_open_brace_local_functions = none
+csharp_new_line_before_open_brace_methods = none
+csharp_new_line_before_open_brace_object_collection_array_initializers = none
+csharp_new_line_before_open_brace_properties = none
+csharp_new_line_before_open_brace_types = none

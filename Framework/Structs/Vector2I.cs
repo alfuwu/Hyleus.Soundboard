@@ -98,6 +98,7 @@ public struct Vector2I : IEquatable<Vector2I> {
         i.Y *= (int)(i.Y * num);
         return i;
     }
+    public static Rectangle operator +(Rectangle rect, Vector2I pos) => new(rect.X + pos.X, rect.Y + pos.Y, rect.Width, rect.Height);
     #endregion
 
     #region Casting
