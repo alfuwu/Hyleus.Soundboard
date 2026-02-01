@@ -5,7 +5,7 @@ using Microsoft.Xna.Framework.Input;
 
 namespace Hyleus.Soundboard.Framework.Structs;
 public class SoundboardItem() {
-    private const byte FILE_VERSION = 0;
+    public const byte FILE_VERSION = 0;
     private byte _flags = 0b00000000;
     private float _volume = 1.0f;
     private float _speed = 1.0f;
@@ -26,26 +26,29 @@ public class SoundboardItem() {
     public event FloatChangedEvent OnVolumeChanged;
     public event FloatChangedEvent OnSpeedChanged;
 
-    public static SoundboardItem FromBinary(BinaryReader reader) {
-        var item = new SoundboardItem();
-        var itemVer = reader.ReadByte();
-        item.Name = reader.ReadString();
-        item.IconLocation = reader.ReadStringOrNull();
-        item.SoundLocation = reader.ReadString();
-        item.Volume = float.Max(reader.ReadSingle(), 0);
-        item.Speed = float.Max(reader.ReadSingle(), float.Epsilon);
-        item.Keybind = reader.ReadByte() == 0 ? null : (Keys)reader.ReadUInt16();
-        item.UUID = reader.ReadGuid();
-        item._flags = reader.ReadByte();
+    public static SoundboardItem FromBinary(BinaryReader reader, byte schemaVer) {
+        var item = new SoundboardItem {
+            Name = reader.ReadString(),
+            IconLocation = reader.ReadStringOrNull(),
+            SoundLocation = reader.ReadString(),
+            Volume = float.Max(reader.ReadSingle(), 0),
+            Speed = float.Max(reader.ReadSingle(), float.Epsilon),
+            Keybind = reader.ReadByte() == 0 ? null : (Keys)reader.ReadUInt16(),
+            UUID = reader.ReadGuid(),
+            _flags = reader.ReadByte()
+        };
         return item;
     }
 
     public void WriteBinary(BinaryWriter writer) {
-        if (SoundLocation == null)
-            throw new InvalidDataException("SoundLocation must be set");
-        if (!File.Exists(SoundLocation))
-            throw new FileNotFoundException("Sound does not exist");
-        writer.Write(FILE_VERSION);
+        if (SoundLocation == null) {
+            Log.Error("SoundLocation must be set (missing for SoundboardItem " + ToString() + ")");
+            return;
+        }
+        if (!File.Exists(SoundLocation)) {
+            Log.Error("No file found at SoundLocation '" + SoundLocation + "' (missing for SoundboardItem " + ToString() + ")");
+            return;
+        }
         writer.Write(Name ?? string.Empty);
         writer.WriteStringOrNull(IconLocation);
         writer.Write(SoundLocation);

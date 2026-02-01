@@ -1,10 +1,12 @@
 ﻿using System;
 using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Threading.Tasks;
 using Hyleus.Soundboard.Framework.Enums;
+using Hyleus.Soundboard.Framework.TypeConverters;
 using Microsoft.Xna.Framework;
 
 namespace Hyleus.Soundboard;
@@ -48,7 +50,8 @@ public static class Preferences {
     private static bool _preventScrollWhenCtxMenuIsOpen = true;
 
     // properties
-    [Description("The frequency that sounds and microphone input will be played/recorded at, in hertz. Requires a restart.\nGenerally, 44.1kHz and 48kHz will be the best options, as they are the most common frequencies that audio is recorded at, and thus do not need resampling.\nIt is recommended to only change this value if the majority of your sounds are recorded at a different frequency (e.g. 48kHz).\nWARNING: Frequencies not supported by your audio devices (e.g. 27kHz) will output pure silence. Make sure that you're using a frequency that's supported by your audio device (normally, this will be 16kHz, 24kHz, 44.1kHz, and 48kHz).")]
+    [AllowedValues(8000, 16000, 24000, 44100, 48000, 96000)]
+    [Description("The frequency that sounds and microphone input will be played/recorded at, in hertz. Requires a restart.\nGenerally, 44.1kHz and 48kHz will be the best options, as they are the most common frequencies that audio is recorded at, and thus do not need resampling.\nIt is recommended to only change this value if the majority of your sounds are recorded at a different frequency (e.g. 44.1kHz).\nWARNING: Frequencies not supported by your audio devices (e.g. 27kHz) will output pure silence. Make sure that you're using a frequency that's supported by your audio device (normally, this will be 16kHz, 24kHz, 44.1kHz, and 48kHz).")]
     public static int AudioFrequency { get => _audioFrequency; set => Update(nameof(AudioFrequency), ref _audioFrequency, value); }
     [Description("""
         The language used in-game.
@@ -75,15 +78,15 @@ public static class Preferences {
     public static int Padding { get => _padding; set => Update(nameof(Padding), ref _padding, value); }
     [Description("The margin between soundboard buttons.")]
     public static int Margin { get => _margin; set => Update(nameof(Margin), ref _margin, value); }
-    [Description("The maximum size of a soundboard button (in pixels).")]
-    public static int MaxButtonSize { get => _maxButtonSize; set => Update(nameof(MaxButtonSize), ref _maxButtonSize, value); }
     [Description("The minimum size of a soundboard button (in pixels).")]
     public static int MinButtonSize { get => _minButtonSize; set => Update(nameof(MinButtonSize), ref _minButtonSize, value); }
-    [Description("Plays sounds to both the virtual cable and your audio device, allowing you to hear them too.")]
+    [Description("The maximum size of a soundboard button (in pixels).")]
+    public static int MaxButtonSize { get => _maxButtonSize; set => Update(nameof(MaxButtonSize), ref _maxButtonSize, value); }
+    [Description("Plays sounds to both the virtual cable and your main audio device, allowing you to hear them too.")]
     public static bool PlaySoundsToSystem { get => _playSoundsToHeadphones; set => Update(nameof(PlaySoundsToSystem), ref _playSoundsToHeadphones, value); }
-    [Description("Plays microphone input affected by a voice changer effect to your audio device.")]
+    [Description("Plays microphone input affected by a voice changer to your main audio device.")]
     public static bool PlayVoiceChangerToSystem { get => _playVoiceChangerToHeadphones; set => Update(nameof(PlayVoiceChangerToSystem), ref _playVoiceChangerToHeadphones, value); }
-    [Description("Plays all microphone input to your audio device.")]
+    [Description("Plays all microphone input to your main audio device.")]
     public static bool PlayMicToSystem { get => _playMicToHeadphones; set => Update(nameof(PlayMicToSystem), ref _playMicToHeadphones, value); }
     [Description("The minimum value you can set audio volume to using the context menu.")]
     public static float VolumeMin { get => _volumeMin; set => Update(nameof(VolumeMin), ref _volumeMin, value); }
@@ -114,7 +117,7 @@ public static class Preferences {
     }
 
     private static void LoadDefaults() {
-        AudioFrequency = 44100;
+        AudioFrequency = 48000;
         CurrentLocale = Locale.English;
         BackgroundColor = new(50, 46, 47);
         EffectsColor1 = new(54, 48, 49);
@@ -145,6 +148,7 @@ public static class Preferences {
     public static void LoadTypeConverters() {
         if (_initialized)
             return;
+        TypeDescriptor.AddAttributes(typeof(Color), new TypeConverterAttribute(typeof(ColorTypeConverter)));
     }
 
     public static void LoadPreferences() {
@@ -171,13 +175,13 @@ public static class Preferences {
     }
     public static void SavePreferences() {
         Directory.CreateDirectory(Main.DataFolder);
-        using FileStream fs = new(Path.Combine(Main.DataFolder, "Preferences.cfg"), FileMode.Create, FileAccess.Write);
+        using FileStream fs = new(Path.Combine(Main.DataFolder, "Soundboard.cfg"), FileMode.Create, FileAccess.Write);
         using StreamWriter writer = new(fs);
         Write(writer);
     }
     public static async Task SavePreferencesAsync() {
         Directory.CreateDirectory(Main.DataFolder);
-        string path = Path.Combine(Main.DataFolder, "Preferences.cfg");
+        string path = Path.Combine(Main.DataFolder, "Soundboard.cfg");
 
         const int maxRetries = 10;
         const int delayMs = 100;

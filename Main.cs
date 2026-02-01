@@ -1,12 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Hyleus.Soundboard.Audio;
 using Hyleus.Soundboard.Framework;
+using Hyleus.Soundboard.Framework.Enums;
 using Hyleus.Soundboard.Framework.Extensions;
+using Hyleus.Soundboard.Framework.Interpolation;
 using Hyleus.Soundboard.Framework.Structs;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -25,42 +30,86 @@ class Program {
 }
 
 public class Main : Game {
+    // constants
     private const ushort FILE_VERSION = 0;
     private const int menuWidth = 220;
     private const int menuItemHeight = 36;
     private const int horizontalPadding = 18;
     private const int sliderHeight = 48;
-    private readonly (string name, Action onClick)[] _menuItems;
+    private const int SettingsRowHeight = 56;
+    private const int SettingsPadding = 24;
+    private const int SettingsLabelWidth = 260;
+    private static readonly Color Semitransparent = new(128, 128, 128, 128);
 
+    // core
     private readonly GraphicsDeviceManager _graphics;
     private SpriteBatch _spriteBatch;
     private AudioEngine _audio;
-    private KeyboardState _previousKeyboard;
+
+    // main soundboard stuff
     private readonly List<Category> _categories = [];
+    private Button<Category>[] _catButtons = [];
     private readonly List<SoundboardItem> _sounds = [];
-    private SoundboardButton[] _buttons = [];
+    private Button<SoundboardItem>[] _buttons = [];
+    private Guid? _currentCat = null;
+
+    // mouse states
     private MouseState _previousMouse;
     private MouseState _mouse;
+
+    private KeyboardState _previousKeyboard;
+
+    // textures
     private SpriteFont _font;
     private Texture2D _pixel;
     private Texture2D _defaultIcon;
+
+    // effects
+    private Effect _blur;
     private Effect _menu;
     private Effect _rounded;
+    
+    // colors
     private Color _btn;
     private Color _btnHover;
     private Color _btnPressed;
+    private Color _btnTransparent;
     private Color _ctxMenu;
     private Color _ctxHover;
     private Color _ctxPressed;
+    private Color _blurColor = Color.White;
+    private Color _settingsColor = Color.Transparent;
+    
+    // audio device stuff
     private string _preferredInput = null;
     private string _preferredOutput = null;
     private string _preferredRegularOutput = null;
     private bool _hasOwnCable = false;
+
+
+    // context menu
+    private readonly (string name, Action onClick)[] _menuItems;
+    private readonly (string name, Action onClick)[] _catMenuItems;
     private Point _ctxPos;
+    private Category _ctxCat = null;
     private SoundboardItem _ctxItem = null;
     private Rectangle? _ctxRect = null;
     private readonly List<ContextMenuSlider> _ctxSliders = [];
     private ContextMenuSlider _activeSlider = null;
+
+    // settings stuff
+    private readonly List<SettingsItem> _settingsItems = [];
+    private bool _settingsOpen = false;
+    private RenderTarget2D blurTarget;
+    private Rectangle _settingsButton;
+    private Rectangle _settings;
+
+    // dragging
+    private int _draggingIdx = -1;
+    private Point? _dragStart = null;
+    private const float DragThreshold = 10; // in pixels
+
+    // misc
     private bool _wasActive;
 
     public static Vector2I WindowSize {
@@ -100,10 +149,12 @@ public class Main : Game {
     private delegate void TimerProc(IntPtr hWnd, uint uMsg, IntPtr nIDEvent, uint dwTime);
     private TimerProc _timerProc = null;
 #endif
-
     private int _manualTickCount = 0;
     private bool _manualTick;
+
+    // scrolling
     private int _scrollPosition = 0;
+    private int _settingsScroll = 0;
 
     public Main() {
         if (Instance != null)
@@ -118,14 +169,7 @@ public class Main : Game {
         IsMouseVisible = true;
 
         WindowSize = new Vector2I(ScreenWidth, ScreenHeight);
-
-        Preferences.OnPreferenceUpdate += (propertyName, old, updated) => {
-            if (propertyName == nameof(Preferences.BackgroundColor))
-                CalculateButtonColors(Preferences.BackgroundColor);
-            
-            Preferences.SavePreferences();
-            return true;
-        };
+        blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
 
         Window.FileDrop += (_, args) => {
             foreach (var file in args.Files)
@@ -141,9 +185,71 @@ public class Main : Game {
                 BuildSoundboardGrid();
             })
         ];
+        _catMenuItems = [
+            ("Open", () => {
+                _currentCat = _ctxCat.UUID;
+                BuildSoundboardGrid();
+            }),
+            ("Edit", () => {}),
+            ("Delete", () => {})
+        ];
     }
 
     protected override void Initialize() {
+        Preferences.LoadPreferences();
+        Preferences.SavePreferences();
+        CalculateButtonColors(Preferences.BackgroundColor);
+
+        Preferences.OnPreferenceUpdate += (propertyName, old, updated) => {
+            switch (propertyName) {
+                case nameof(Preferences.BackgroundColor):
+                    CalculateButtonColors(Preferences.BackgroundColor);
+                    break;
+                case nameof(Preferences.MinButtonSize):
+                    if ((float)updated > Preferences.MaxButtonSize)
+                        return false;
+                    goto case nameof(Preferences.MaxButtonSize);
+                case nameof(Preferences.MaxButtonSize):
+                case nameof(Preferences.Padding):
+                case nameof(Preferences.Margin):
+                    BuildSoundboardGrid();
+                    break;
+                case nameof(Preferences.EffectsColor1):
+                    _menu.Parameters["Color1"]?.SetValue(((Color)updated).ToVector3());
+                    break;
+                case nameof(Preferences.EffectsColor2):
+                    _menu.Parameters["Color2"]?.SetValue(((Color)updated).ToVector3());
+                    break;
+                case nameof(Preferences.EffectsColor3):
+                    _menu.Parameters["Color3"]?.SetValue(((Color)updated).ToVector3());
+                    break;
+                case nameof(Preferences.PlaySoundsToSystem):
+                    _audio.PlaySoundsToSystem((bool)updated);
+                    break;
+                case nameof(Preferences.PlayVoiceChangerToSystem):
+                    _audio.PlayVoiceChangerToSystem((bool)updated);
+                    break;
+                case nameof(Preferences.PlayMicToSystem):
+                    _audio.PlayMicToSystem((bool)updated);
+                    break;
+                case nameof(Preferences.VolumeMin):
+                    if ((float)updated > Preferences.VolumeMax)
+                        return false;
+                    break;
+                case nameof(Preferences.SpeedMin):
+                    if ((float)updated > Preferences.SpeedMax)
+                        return false;
+                    break;
+                default:
+                    break;
+            }
+            
+            Preferences.SavePreferences();
+            return true;
+        };
+        
+        Log.Info("User preferences loaded successfully.");
+
         try {
             _audio = new AudioEngine(_hasOwnCable, Preferences.AudioFrequency);
         } catch (Exception e) {
@@ -170,10 +276,6 @@ public class Main : Game {
     protected override void LoadContent() {
         _spriteBatch = new SpriteBatch(GraphicsDevice);
 
-        Preferences.LoadPreferences();
-        CalculateButtonColors(Preferences.BackgroundColor);
-        Log.Info("User preferences loaded successfully.");
-
         if (File.Exists(SoundboardData)) {
             using var fs = File.OpenRead(SoundboardData);
             using var br = new BinaryReader(fs);
@@ -182,11 +284,25 @@ public class Main : Game {
             _preferredOutput = br.ReadStringOrNull();
             _preferredRegularOutput = br.ReadStringOrNull();
             _hasOwnCable = br.ReadBoolean();
+            Log.Info("Read soundboard metadata\n - Preferred Input:", _preferredInput ?? "null", "\n - Preferred Output:", _preferredOutput ?? "null", "\n - Preferred Regular Output:", _preferredRegularOutput ?? "null");
+            byte catSchemaVer = br.ReadByte();
+            byte itemSchemaVer = br.ReadByte();
+            Log.Info("CAT Schema Ver:", catSchemaVer);
+            Log.Info("ITM Schema Ver:", itemSchemaVer);
+            while (br.PeekChar() > 0) {
+                try {
+                    _categories.Add(Category.FromBinary(br, catSchemaVer));
+                } catch (Exception e) {
+                    Log.Error("Failed to load a category:", e.Message);
+                }
+            }
+            Log.Info("Successfully loaded soundboad categories");
+            br.ReadByte(); // eat the delimiter
             while (fs.Position < fs.Length) {
                 try {
-                    _sounds.Add(SoundboardItem.FromBinary(br));
-                } catch {
-                    Log.Error("Failed to load a sound");
+                    _sounds.Add(SoundboardItem.FromBinary(br, itemSchemaVer));
+                } catch (Exception e) {
+                    Log.Error("Failed to load a sound:", e.Message);
                 }
             }
             Log.Info("Successfully loaded soundboad data");
@@ -201,8 +317,8 @@ public class Main : Game {
         //var iChannel2 = Content.Load<Texture2D>("iChannel2");
         //_graphics.GraphicsDevice.Textures[2] = iChannel2;
 
+        _blur = Content.Load<Effect>("Shaders/Blur");
         _menu = Content.Load<Effect>("Shaders/Menu");
-        _menu.Parameters["Resolution"]?.SetValue(new Vector2(ScreenWidth, ScreenHeight));
         _menu.Parameters["Color1"]?.SetValue(Preferences.EffectsColor1.ToVector3());
         _menu.Parameters["Color2"]?.SetValue(Preferences.EffectsColor2.ToVector3());
         _menu.Parameters["Color3"]?.SetValue(Preferences.EffectsColor3.ToVector3());
@@ -211,8 +327,6 @@ public class Main : Game {
 
         OnResized();
     }
-
-    SettingsWindow settings = null;
 
     protected override void Update(GameTime gameTime) {
         _started = true;
@@ -227,53 +341,41 @@ public class Main : Game {
         if (oldScreenHeight != ScreenHeight || oldScreenWidth != ScreenWidth)
             OnResized();
 
+        _previousMouse = _mouse;
         _mouse = Mouse.GetState();
 
-        bool skipPressed = !_wasActive && IsActive;
-        bool left = LeftClick() &&
-            (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
-        if ((left ||
-            _mouse.RightButton == ButtonState.Pressed &&
-            (_previousMouse.RightButton == ButtonState.Released || skipPressed)) &&
-            IsActive
+        Interpolation.Update(gameTime);
+
+        // closing the settings menu
+        if (_mouse.LeftButton == ButtonState.Pressed &&
+            _previousMouse.LeftButton == ButtonState.Released &&
+            !_settings.Contains(_mouse.Position) &&
+            _settingsOpen &&
+            IsActive &&
+            new Rectangle(Point.Zero, Window.ClientBounds.Size).Contains(_mouse.Position)
         ) {
-            ResetCtxMenu();
-
-            foreach (var button in _buttons) {
-                if (MouseHover(button.Bounds)) {
-                    if (left) {
-                        if (button.Item.SoundLocation != null)
-                            _audio.PlaySound(button.Item);
-                    } else {
-                        _ctxPos = _mouse.Position;
-                        _ctxItem = button.Item;
-                        BuildContextSliders(_ctxItem);
-                    }
-                    break;
-                }
-            }
-
-            var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
-            if (MouseHover(bounds)) {
-                Log.Info(Window);
-                settings = new(Window, GraphicsDevice, Window.ClientBounds.Width, Window.ClientBounds.Height);
-                settings.OnDraw += (window, sb) => {
-                    //GraphicsDevice.Clear(Color.Black);
-                    /*sb.Begin();
-                    sb.Draw(
-                        _pixel,
-                        new Rectangle(0, 0, window.ClientBounds.Width, window.ClientBounds.Height),
-                        Color.White
-                    );
-                    sb.End();*/
-                };
-                
-                //SettingsWindow.CreateGraphicsDevice(settings.Handle, 400, 400);
-            }
+            var param = _blur.Parameters["BlurStrength"];
+            Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
+            Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
+            Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.Transparent, 0.5f);
+            Task.Run(async () => {
+                await Task.Delay(500);
+                _settingsOpen = false;
+            });
         }
+
+        // poorly named variables: ultra deluxe pro max edition (now in theatres near you for only $99.99!)
+        bool skipPressed = !_wasActive && IsActive;
+        bool lc = LeftClick();
+        bool click = _mouse.LeftButton == ButtonState.Pressed &&
+            (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
+        bool left = _mouse.LeftButton == ButtonState.Released &&
+            (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
+
+        // context menu clicky clackies
         if (_ctxItem != null && _ctxRect.HasValue && IsActive) {
-            left = _mouse.LeftButton == ButtonState.Pressed &&
-                    (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
+            left = _mouse.LeftButton == ButtonState.Released &&
+                    (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
             for (int i = 0; i < _menuItems.Length; i++) {
                 Rectangle rect = GetMenuItemRect(i);
 
@@ -287,7 +389,7 @@ public class Main : Game {
             foreach (var slider in _ctxSliders) {
                 Rectangle sliderRect = GetSliderRect(slider);
 
-                if (left && sliderRect.Contains(_mouse.Position)) {
+                if (click && sliderRect.Contains(_mouse.Position)) {
                     _activeSlider = slider;
                     slider.IsDragging = true;
                 }
@@ -303,17 +405,98 @@ public class Main : Game {
                 _activeSlider.SetFromNormalized(t);
             }
         }
+        // dragging soundboard buttons to reposition/move them into a new category
+        if (_draggingIdx < 0) {
+            if (lc) {
+                if (!_dragStart.HasValue)
+                    _dragStart = _mouse.Position;
+                else if (float.Abs(Vector2.Distance(_dragStart.Value.ToVector2(), _mouse.Position.ToVector2())) > DragThreshold) {
+                    ResetCtxMenu();
+                    for (int i = 0; i < _buttons.Length; i++)
+                        if (_buttons[i].Bounds.Contains(_dragStart.Value))
+                            _draggingIdx = i;
+                    _dragStart = null;
+                }
+            } else if (_dragStart.HasValue) {
+                _dragStart = null;
+            }
+        }
+        if (left && _draggingIdx >= 0) {
+            // applying drag stuff
+            int moveIdx = GetHoverIndex();
+            if (moveIdx != _draggingIdx) {
+                if (moveIdx == -1) {
+                    // category moving
+                } else {
+                    SoundboardItem sound = _sounds[_draggingIdx];
+                    int soundIdx = _sounds.IndexOf(sound);
+                    if (moveIdx >= soundIdx)
+                        moveIdx--;
+                    _sounds.Remove(sound);
+                    _sounds.Insert(moveIdx, sound);
+                    SaveSounds();
+                    BuildSoundboardGrid();
+                }
+            }
+            _draggingIdx = -1;
+        } else if ((left ||
+            _mouse.RightButton == ButtonState.Released &&
+            (_previousMouse.RightButton == ButtonState.Pressed || skipPressed)) &&
+            (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) &&
+            !_settingsOpen && IsActive
+        ) {
+            ResetCtxMenu();
 
+            // clicking soundboard categories
+            foreach (var cat in _catButtons) {
+                if (MouseHover(cat.Bounds)) {
+                    if (left) {
+                        _currentCat = cat.Item.UUID;
+                        BuildSoundboardGrid();
+                    } else {
+                        _ctxPos = _mouse.Position;
+                        _ctxCat = cat.Item;
+                    }
+                }
+            }
+
+            // clicking soundboad buttons
+            foreach (var button in _buttons) {
+                if (MouseHover(button.Bounds)) {
+                    if (left) {
+                        if (button.Item.SoundLocation != null)
+                            _audio.PlaySound(button.Item);
+                    } else {
+                        _ctxPos = _mouse.Position;
+                        _ctxItem = button.Item;
+                        BuildContextSliders(_ctxItem);
+                    }
+                    break;
+                }
+            }
+
+            // opening settings menu
+            var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
+            if (MouseHover(bounds)) {
+                _settingsOpen = true;
+                var param = _blur.Parameters["BlurStrength"];
+                Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
+                Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+                Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
+            }
+        }
+
+        // resetting ctx menu sliders
         if (_mouse.LeftButton == ButtonState.Released && _activeSlider != null) {
             _activeSlider.IsDragging = false;
             _activeSlider = null;
             SaveSounds();
         }
 
+        // calculating scroll delta stuff
         if (_mouse.ScrollWheelValue != _previousMouse.ScrollWheelValue && (!Preferences.PreventScrollWhenContextMenuIsOpen || _ctxItem == null))
             CalculateScroll();
 
-        _previousMouse = _mouse;
         _wasActive = IsActive;
 
         _menu.Parameters["Time"]?.SetValue((float)gameTime.TotalGameTime.TotalSeconds);
@@ -323,6 +506,8 @@ public class Main : Game {
     }
 
     protected override void Draw(GameTime gameTime) {
+        if (_settingsOpen)
+            GraphicsDevice.SetRenderTarget(blurTarget);
         GraphicsDevice.Clear(Preferences.BackgroundColor);
 
         _spriteBatch.Begin(SpriteSortMode.Immediate, effect: _menu);
@@ -342,43 +527,92 @@ public class Main : Game {
         _spriteBatch.End();
 
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
-        foreach (var button in _buttons) {
-            _spriteBatch.Draw(
-                _pixel,
-                button.Bounds,
-                MouseHover(button.Bounds) ? LeftClick() ?
-                    _btnPressed : _btnHover : _btn
-            );
-
-            Texture2D icon = button.Icon ?? _defaultIcon;
-            _spriteBatch.Draw(
-                icon,
-                button.Bounds,
-                MouseHover(button.Bounds) ? LeftClick() ?
-                    Color.Gray : Color.DarkGray : Color.White
-            );
+        for (int i = 0; i < _buttons.Length; i++) {
+            if (i == _draggingIdx)
+                continue;
+            int samplePos = i;
+            if (_draggingIdx >= 0 && _mouse.Position.X > CategoryListSize) {
+                int row = samplePos / _currentColumns;
+                int y = row * _buttonSize + _scrollPosition;
+                int sizeY = Preferences.Margin + _buttonSize + Preferences.Padding;
+                bool below = _mouse.Position.Y > y + sizeY;
+                if (_draggingIdx < i)
+                    samplePos--;
+                if ((_mouse.Position.X < _buttons[i].Bounds.Location.X && !below) || _mouse.Position.Y < y)
+                    samplePos++;
+            }
+            DrawButton(i, samplePos != i ? _buttons[samplePos].Bounds.Location : null);
         }
-        var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
+        if (_draggingIdx >= 0)
+            DrawButton(_draggingIdx, _mouse.Position);
         _spriteBatch.Draw(
             _pixel,
-            bounds,
-            MouseHover(bounds) ? LeftClick() ?
+            _settingsButton,
+            MouseHover(_settingsButton) ? LeftClick() ?
                 _btnPressed : _btnHover : _btn
         );
         _spriteBatch.End();
 
-        if (_ctxItem != null)
+        if (_ctxItem != null || _ctxCat != null)
             DrawContextMenu(_ctxPos);
         
-        if (settings != null && settings.CanDraw()) {
-            settings.Draw();
-            settings.FinishDraw();
+        if (_settingsOpen)
+            DrawSettings();
+    }
+
+    private int GetHoverIndex() {
+        if (_mouse.Position.X <= CategoryListSize)
+            return -1;
+        int lastSP = -1;
+        for (int i = 0; i < _buttons.Length; i++) {
+            if (i == _draggingIdx)
+                continue;
+            int samplePos = i;
+            if (_draggingIdx >= 0) {
+                int row = samplePos / _currentColumns;
+                int y = row * _buttonSize + _scrollPosition;
+                int sizeY = Preferences.Margin + _buttonSize + Preferences.Padding;
+                bool below = _mouse.Position.Y > y + sizeY;
+                if (_draggingIdx < i)
+                    samplePos--;
+                if ((_mouse.Position.X < _buttons[i].Bounds.Location.X && !below) || _mouse.Position.Y < y)
+                    samplePos++;
+            }
+            if (lastSP < i && samplePos > i || lastSP < i - 1 && samplePos == i)
+                return i;
+            lastSP = samplePos;
         }
+        return _buttons.Length;
+    }
+
+    private void DrawButton(int idx, Point? pos = null) {
+        var button = _buttons[idx];
+        var dragged = idx == _draggingIdx;
+        var rect = pos.HasValue ?
+            button.Bounds.WithPosition(pos.Value) :
+            button.Bounds;
+        _spriteBatch.Draw(
+            _pixel,
+            rect,
+            dragged ? _btnTransparent : MouseHover(rect) ? LeftClick() ?
+                _btnPressed : _btnHover : _btn
+        );
+
+        Texture2D icon = button.Icon ?? _defaultIcon;
+        _spriteBatch.Draw(
+            icon,
+            rect,
+            dragged ? Semitransparent : MouseHover(rect) ? LeftClick() ?
+                Color.Gray : Color.DarkGray : Color.White
+        );
     }
 
     private void DrawContextMenu(Point position) {
+        var menuItems = _ctxCat != null ?
+            _catMenuItems : _menuItems;
+
         int totalHeight =
-            menuItemHeight * _menuItems.Length +
+            menuItemHeight * menuItems.Length +
             sliderHeight * _ctxSliders.Count;
 
         _ctxRect = new Rectangle(
@@ -399,7 +633,7 @@ public class Main : Game {
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
 
         // menu items
-        for (int i = 0; i < _menuItems.Length; i++) {
+        for (int i = 0; i < menuItems.Length; i++) {
             Rectangle itemRect = GetMenuItemRect(i);
             Color hover = itemRect.Contains(_mouse.Position) ? _mouse.LeftButton == ButtonState.Pressed ?
                 _ctxPressed : _ctxHover : Color.Transparent;
@@ -414,7 +648,7 @@ public class Main : Game {
             // text
             _spriteBatch.DrawString(
                 _font,
-                _menuItems[i].name,
+                menuItems[i].name,
                 new Vector2(itemRect.X + horizontalPadding, itemRect.Y + 8),
                 Color.White,
                 0,
@@ -427,7 +661,7 @@ public class Main : Game {
 
         var divider = new Rectangle(
             position.X + 12,
-            position.Y + menuItemHeight * _menuItems.Length - 1,
+            position.Y + menuItemHeight * menuItems.Length - 1,
             menuWidth - 24,
             2
         );
@@ -476,49 +710,144 @@ public class Main : Game {
         _spriteBatch.End();
     }
 
-    private bool LeftClick() => _mouse.LeftButton == ButtonState.Pressed && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
-    private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position));
-
-    private Rectangle GetMenuItemRect(int i) => new(_ctxRect.Value.X, _ctxRect.Value.Y + i * menuItemHeight, menuWidth, menuItemHeight);
-    private Rectangle GetSliderRect(ContextMenuSlider slider) {
-        int index = _ctxSliders.IndexOf(slider);
-
-        int y =
-            _ctxRect.Value.Y +
-            menuItemHeight * _menuItems.Length +
-            index * sliderHeight;
-
-        return new Rectangle(
-            _ctxRect.Value.X,
-            y,
-            _ctxRect.Value.Width,
-            sliderHeight
+    private void DrawSettings() {
+        GraphicsDevice.SetRenderTarget(null);
+        // draw the background but blurred
+        _spriteBatch.Begin(SpriteSortMode.Deferred, effect: _blur);
+        _spriteBatch.Draw(
+            blurTarget,
+            new Rectangle(0, 0, blurTarget.Width, blurTarget.Height),
+            _blurColor
         );
+        _spriteBatch.End();
+
+        // draw rounded settings modal
+        var texVec = _rounded.Parameters["TextureSize"].GetValueVector2();
+        _rounded.Parameters["TextureSize"].SetValue(new Vector2(_settings.Width, _settings.Height));
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
+        _spriteBatch.Draw(_pixel, _settings, Preferences.BackgroundColor * _settingsColor);
+        _spriteBatch.End();
+        _rounded.Parameters["TextureSize"].SetValue(texVec);
+
+        var rasterizer = new RasterizerState {
+            ScissorTestEnable = true
+        };
+
+        // clip settings items
+        GraphicsDevice.ScissorRectangle = _settings;
+        _spriteBatch.Begin(SpriteSortMode.Immediate, rasterizerState: rasterizer);
+        for (int i = 0; i < _settingsItems.Count; i++) {
+            var item = _settingsItems[i];
+            var row = new Rectangle(
+                _settings.X + SettingsPadding,
+                _settings.Y + SettingsPadding + i * SettingsRowHeight + _settingsScroll,
+                _settings.Width - SettingsPadding * 2,
+                SettingsRowHeight
+            );
+
+            _spriteBatch.DrawString(_font, item.Name, row.Location.ToVector2(), _settingsColor);
+
+            switch (item.ControlType) {
+                case SettingsControlType.Bool:
+                    DrawBool(item, row);
+                    break;
+                case SettingsControlType.Int:
+                    var av = item.Property.GetCustomAttribute<AllowedValuesAttribute>();
+                    if (av != null)
+                        DrawCycle(item, row, av.Values);
+                    else {
+                        var range = item.Property.GetCustomAttribute<RangeAttribute>();
+                        DrawSlider(item, row, 0, 256);
+                    }
+                    break;
+                case SettingsControlType.Float:
+                    av = item.Property.GetCustomAttribute<AllowedValuesAttribute>();
+                    if (av != null)
+                        DrawCycle(item, row, av.Values);
+                    else {
+                        var range = item.Property.GetCustomAttribute<RangeAttribute>();
+                        DrawSlider(item, row, 0, 10);
+                    }
+                    break;
+                case SettingsControlType.Enum:
+                    DrawCycle(item, row, Enum.GetValuesAsUnderlyingType(item.Property.PropertyType));
+                    break;
+                case SettingsControlType.Color:
+                    DrawColor(item, row);
+                    break;
+            }
+        }
+
+        _spriteBatch.End();
     }
 
+    private bool LeftClick() => _mouse.LeftButton == ButtonState.Pressed && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) && !_settingsOpen && _draggingIdx < 0;
+    private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) && !_settingsOpen && _draggingIdx < 0;
+    private bool Clicked(Rectangle r) =>
+        _mouse.LeftButton == ButtonState.Pressed &&
+        _previousMouse.LeftButton == ButtonState.Released &&
+        r.Contains(_mouse.Position);
+
+    private Rectangle GetMenuItemRect(int i) => new(_ctxRect.Value.X, _ctxRect.Value.Y + i * menuItemHeight, menuWidth, menuItemHeight);
+    private Rectangle GetSliderRect(ContextMenuSlider slider) => new(
+        _ctxRect.Value.X,
+        _ctxRect.Value.Y +
+            menuItemHeight * _menuItems.Length +
+            _ctxSliders.IndexOf(slider) * sliderHeight,
+        _ctxRect.Value.Width,
+        sliderHeight
+    );
+
     private void ResetCtxMenu() {
+        _ctxCat = null;
         _ctxItem = null;
         _ctxRect = null;
         _ctxSliders.Clear();
     }
 
     private void OnResized() {
+        _blur.Parameters["TextureSize"].SetValue(new Vector2(ScreenWidth, ScreenHeight));
+        _menu.Parameters["Resolution"]?.SetValue(new Vector2(ScreenWidth, ScreenHeight));
         _menu.Parameters["AspectRatio"]?.SetValue((float)ScreenWidth / ScreenHeight);
         CalculateScroll();
         BuildSoundboardGrid();
+        BuildSettingsItems();
+        _settingsButton = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
+        
+        int settingsWidth = (int)(ScreenWidth * 0.6f);
+        int settingsHeight = (int)(ScreenHeight * 0.7f);
+
+        _settings = new Rectangle(
+            (ScreenWidth - settingsWidth) / 2,
+            (ScreenHeight - settingsHeight) / 2,
+            settingsWidth,
+            settingsHeight
+        );
+        blurTarget.Dispose();
+        blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
     }
 
     private void CalculateScroll() {
-        int offset = (int)((_previousMouse.ScrollWheelValue - _mouse.ScrollWheelValue) / 10f);
-        int newScroll = int.Clamp(_scrollPosition + offset, 0, _buttons.Length > 0 ? Rows * _buttonSize : 0);
-        int delta = newScroll - _scrollPosition;
-        _scrollPosition = newScroll;
-        foreach (var btn in _buttons)
-            btn.Bounds.Y += delta;
-        if (Preferences.CloseContextMenuOnScroll)
-            ResetCtxMenu();
-        else
-            _ctxPos.Y += delta;
+        int sp = _settingsOpen ? _settingsScroll : _scrollPosition;
+        int offset = (int)((_previousMouse.ScrollWheelValue - _mouse.ScrollWheelValue) / (_settingsOpen ? 5f : 10f));
+        int newScroll = int.Clamp(
+            sp - offset, -(_settingsOpen ?
+                int.Max((_settingsItems.Count * SettingsRowHeight) - (int)(_settings.Height * 0.9f), 0) :
+                _buttons.Length > 0 ? Rows * _buttonSize : 0),
+            0
+        );
+        int delta = newScroll - sp;
+        if (_settingsOpen) {
+            _settingsScroll = newScroll;
+        } else {
+            _scrollPosition = newScroll;
+            foreach (var btn in _buttons)
+                btn.Bounds.Y += delta;
+            if (Preferences.CloseContextMenuOnScroll)
+                ResetCtxMenu();
+            else
+                _ctxPos.Y += delta;
+        }
     }
 
     private void CalculateButtonColors(Color bg) {
@@ -528,6 +857,7 @@ public class Main : Game {
         _btn = Color.Lerp(bg, light, 0.1f);
         _btnHover = Color.Lerp(bg, light, 0.05f);
         _btnPressed = Color.Lerp(bg, dark, 0.05f);
+        _btnTransparent = _btn * new Color(128, 128, 128, 128);
         _ctxMenu = Color.Lerp(bg, dark, 0.5f);
         _ctxMenu.A = 230;
         _ctxHover = light * 0.1f;
@@ -538,6 +868,11 @@ public class Main : Game {
         _sounds.Add(sound);
         SaveSounds();
         Log.Info($"Added sound '{sound.Name}'");
+    }
+    public void AddSoundAt(SoundboardItem sound, int idx) {
+        _sounds.Insert(idx, sound);
+        SaveSounds();
+        Log.Info($"Insert sound at position '{idx + 1}': '{sound.Name}'");
     }
     public void RemoveSound(SoundboardItem sound) {
         if (_sounds.Remove(sound)) {
@@ -561,6 +896,11 @@ public class Main : Game {
             bw.WriteStringOrNull(_preferredOutput);
             bw.WriteStringOrNull(_preferredRegularOutput);
             bw.Write(_hasOwnCable);
+            bw.Write(Category.FILE_VERSION);
+            bw.Write(SoundboardItem.FILE_VERSION);
+            foreach(var c in _categories)
+                c.WriteBinary(bw);
+            bw.Write((byte)0); // delimiter
             foreach (var i in _sounds)
                 i.WriteBinary(bw);
         }
@@ -611,6 +951,7 @@ public class Main : Game {
         }).Start();
     }
 
+#region Builders
     private void BuildContextSliders(SoundboardItem item) {
         _ctxSliders.Clear();
 
@@ -634,11 +975,13 @@ public class Main : Game {
     public void BuildSoundboardGrid() {
         int availableWidth = ScreenWidth - Preferences.Margin * 2 - CategoryListSize;
 
+        List<SoundboardItem> availableSounds = _sounds.FindAll(s => s.CategoryID == _currentCat);
+
         int maxColumns = int.Min(
             int.Max(1,
                 (availableWidth + Preferences.Padding) / (Preferences.MinButtonSize + Preferences.Padding)
             ),
-            int.Max(1, _sounds.Count)
+            int.Max(1, availableSounds.Count)
         );
 
         _buttonSize = int.Clamp(
@@ -653,9 +996,8 @@ public class Main : Game {
 
         _currentColumns = columns;
 
-        var buttons = new SoundboardButton[_sounds.Count];
-
-        for (int i = 0; i < _sounds.Count; i++) {
+        var buttons = new Button<SoundboardItem>[availableSounds.Count];
+        for (int i = 0; i < availableSounds.Count; i++) {
             int col = i % columns;
             int row = i / columns;
 
@@ -666,7 +1008,7 @@ public class Main : Game {
                 _buttonSize
             );
 
-            var sound = _sounds[i];
+            var sound = availableSounds[i];
             var oldButton = _buttons.Find(b => b.Item.UUID == sound.UUID);
 
             Texture2D icon = oldButton?.Icon;
@@ -675,7 +1017,7 @@ public class Main : Game {
                 icon = Texture2D.FromStream(GraphicsDevice, fs);
             }
 
-            buttons[i] = new SoundboardButton {
+            buttons[i] = new Button<SoundboardItem> {
                 Item = sound,
                 Bounds = bounds,
                 Icon = icon
@@ -685,6 +1027,105 @@ public class Main : Game {
         _buttons = buttons;
     }
 
+    private void BuildSettingsItems() {
+        _settingsItems.Clear();
+
+        foreach (var prop in typeof(Preferences).GetProperties(BindingFlags.Public | BindingFlags.Static)) {
+            if (!prop.CanRead || !prop.CanWrite)
+                continue;
+
+            var desc = prop.GetCustomAttribute<DescriptionAttribute>();
+
+            SettingsControlType type =
+                prop.PropertyType == typeof(bool) ? SettingsControlType.Bool :
+                prop.PropertyType == typeof(int) ? SettingsControlType.Int :
+                prop.PropertyType == typeof(float) ? SettingsControlType.Float :
+                prop.PropertyType == typeof(Color) ? SettingsControlType.Color :
+                prop.PropertyType.IsEnum ? SettingsControlType.Enum :
+                throw new NotSupportedException(prop.PropertyType.Name);
+
+            _settingsItems.Add(new SettingsItem(prop, prop.Name, desc?.Description, type));
+        }
+    }
+#region Settings drawers
+    private void DrawBool(SettingsItem item, Rectangle row) {
+        var box = new Rectangle(row.Right - 32, row.Y + 12, 24, 24);
+
+        if (Clicked(box.Exflate(3, 3)) && _settings.Contains(_mouse.Position))
+            item.Set(!(bool)item.Get());
+
+        _spriteBatch.Draw(_pixel, box, _btn * _settingsColor);
+        if ((bool)item.Get())
+            _spriteBatch.Draw(_pixel, box.Exflate(-6, -6), _settingsColor);
+    }
+
+    private void DrawSlider(SettingsItem item, Rectangle row, float min, float max) {
+        var bar = new Rectangle(
+            row.X + SettingsLabelWidth,
+            row.Y + row.Height / 2,
+            row.Width - SettingsLabelWidth - 16,
+            6
+        );
+
+        float value = Convert.ToSingle(item.Get());
+        float t = (value - min) / (max - min);
+
+        if (_mouse.LeftButton == ButtonState.Pressed && _settings.Contains(_mouse.Position) && bar.Exflate(0, 6).Contains(_mouse.Position)) {
+            float nt = (_mouse.X - bar.X) / (float)bar.Width;
+            nt = MathHelper.Clamp(nt, 0, 1);
+            float newValue = MathHelper.Lerp(min, max, nt);
+
+            if (item.ControlType == SettingsControlType.Int)
+                item.Set((int)newValue);
+            else
+                item.Set(newValue);
+        }
+
+        _spriteBatch.Draw(_pixel, bar, _settingsColor * 0.25f);
+        _spriteBatch.Draw(_pixel, new Rectangle(bar.X, bar.Y, (int)(bar.Width * t), bar.Height), _settingsColor);
+    }
+
+    private void DrawCycle(SettingsItem item, Rectangle row, Array values) {
+        var button = new Rectangle(row.Right - 160, row.Y + 10, 150, 32);
+
+        if (Clicked(button.Exflate(3, 3)) && _settings.Contains(_mouse.Position)) {
+            int idx = Array.IndexOf(values, item.Get());
+            item.Set(values.GetValue((idx + 1) % values.Length));
+        }
+
+        _spriteBatch.Draw(_pixel, button, _btn * _settingsColor);
+        _spriteBatch.DrawString(_font,
+            item.Get().ToString(),
+            new Vector2(button.X + 8, button.Y + 6),
+            _settingsColor
+        );
+    }
+
+    private void DrawColor(SettingsItem item, Rectangle row) {
+        Color c = (Color)item.Get();
+
+        float DrawChannel(string label, int y, byte value) {
+            var bar = new Rectangle(row.X + SettingsLabelWidth, y, 200, 6);
+            float t = value / 255f;
+
+            if (_mouse.LeftButton == ButtonState.Pressed && bar.Exflate(0, 3).Contains(_mouse.Position) && _settings.Contains(_mouse.Position))
+                t = MathHelper.Clamp((_mouse.X - bar.X) / (float)bar.Width, 0, 1);
+
+            _spriteBatch.Draw(_pixel, bar, _settingsColor * 0.25f);
+            _spriteBatch.Draw(_pixel, new Rectangle(bar.X, bar.Y, (int)(bar.Width * t), bar.Height), _settingsColor);
+            return t;
+        }
+
+        float r = DrawChannel("R", row.Y + 10, c.R);
+        float g = DrawChannel("G", row.Y + 26, c.G);
+        float b = DrawChannel("B", row.Y + 42, c.B);
+
+        item.Set(new Color(r, g, b));
+    }
+#endregion
+#endregion
+
+#region SDL hacking
     private unsafe int HandleSDLEvent(IntPtr userdata, IntPtr ptr) {
         SDL_Event* e = (SDL_Event*)ptr;
 
@@ -722,4 +1163,5 @@ public class Main : Game {
         }
     }
 #endif
+#endregion
 }

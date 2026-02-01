@@ -44,6 +44,12 @@
 /processorParam:TextureFormat=Color
 /build:iChannel2.png
 
+#begin Shaders/Blur.fx
+/importer:EffectImporter
+/processor:EffectProcessor
+/processorParam:DebugMode=Auto
+/build:Shaders/Blur.fx
+
 #begin Shaders/Menu.fx
 /importer:EffectImporter
 /processor:EffectProcessor

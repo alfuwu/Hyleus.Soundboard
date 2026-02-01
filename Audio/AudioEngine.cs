@@ -74,7 +74,7 @@ public class AudioEngine : IDisposable {
             Volume = MicVolume
         };
 
-        //_micPlayer.AddModifier(new PitchModifier2(2.0f));
+        //_micPlayer.AddModifier(new PitchModifier2(0.9f));
         //_micPlayer.AddModifier(new ChorusModifier(_format));
         //_micPlayer.AddModifier(new AutoTuneModifier(sampleRate));
         _micPlayer.AddModifier(new RobotModifier(gain: 0.6f));
@@ -154,6 +154,18 @@ public class AudioEngine : IDisposable {
             Log.Error($"Error playing sound '{filePath}': {ex.Message}");
             return null;
         }
+    }
+
+    public void PlaySoundsToSystem(bool doit) {
+        
+    }
+
+    public void PlayVoiceChangerToSystem(bool doit) {
+        
+    }
+
+    public void PlayMicToSystem(bool doit) {
+        
     }
 
     public void Dispose() {
