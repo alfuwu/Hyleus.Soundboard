@@ -5,7 +5,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Threading.Tasks;
+using Hyleus.Soundboard.Framework;
 using Hyleus.Soundboard.Framework.Enums;
+using Hyleus.Soundboard.Framework.Structs;
 using Hyleus.Soundboard.Framework.TypeConverters;
 using Microsoft.Xna.Framework;
 
@@ -21,7 +23,7 @@ public static class Preferences {
     /// <param name="old"></param>
     /// <param name="updated"></param>
     /// <returns></returns>
-    public delegate bool PreferenceUpdateEvent(string propertyName, object old, object updated);
+    public delegate bool PreferenceUpdateEvent(string propertyName, object old, Ref<object> updated);
     public static event PreferenceUpdateEvent OnPreferenceUpdate;
 
     // internal fields
@@ -109,8 +111,9 @@ public static class Preferences {
     /// <param name="field"></param>
     /// <param name="value"></param>
     private static void Update<T>(string propertyName, ref T field, T value) {
-        if (!field.Equals(value) && OnPreferenceUpdate?.Invoke(propertyName, field, value) != false) {
-            field = value;
+        Ref<T> r = value;
+        if (!field.Equals(value) && OnPreferenceUpdate?.Invoke(propertyName, field, r) != false) {
+            field = r;
             if (_safeToSave)
                 _ = SavePreferencesAsync();
         }

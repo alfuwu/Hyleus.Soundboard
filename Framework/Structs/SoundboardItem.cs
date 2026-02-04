@@ -19,6 +19,7 @@ public class SoundboardItem() {
     public bool RequiresControl { get => (_flags & 1) != 0; set { if (value) _flags |= 1; else unchecked { _flags &= (byte)~1; } } }
     public bool RequiresShift { get => (_flags & 2) != 0; set { if (value) _flags |= 2; else unchecked { _flags &= (byte)~2; } } }
     public bool RequiresAlt { get => (_flags & 4) != 0; set { if (value) _flags |= 4; else unchecked { _flags &= (byte)~4; } } }
+    public bool Loop { get => (_flags & 8) != 0; set { if (value) _flags |= 8; else unchecked { _flags &= (byte)~8; } } }
     public Guid UUID { get; set; } = Guid.NewGuid();
     public Guid? CategoryID { get; set; } = null;
 

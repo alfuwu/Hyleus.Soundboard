@@ -11,13 +11,16 @@ public class Category() {
     public Guid UUID { get; set; } = Guid.NewGuid();
 
     public static Category FromBinary(BinaryReader reader, byte schemaVer) => new() {
-        Name = reader.ReadString(),
+        Name = reader.ReadString(reader.ReadByte()),
         IconLocation = reader.ReadStringOrNull(),
         UUID = reader.ReadGuid()
     };
 
-    public readonly void WriteBinary(BinaryWriter writer) {
-        writer.Write(Name ?? string.Empty);
+    public void WriteBinary(BinaryWriter writer) {
+        string n = string.IsNullOrEmpty(Name) ? "Unknown" : Name;
+        byte l = (byte)int.Min(n.Length, byte.MaxValue);
+        writer.Write(l);
+        writer.Write(n, l);
         writer.WriteStringOrNull(IconLocation);
         writer.Write(UUID);
     }

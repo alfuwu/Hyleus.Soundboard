@@ -27,10 +27,10 @@ float4 MainPS(VertexShaderOutput input) : COLOR
 {
     float2 uv = input.TextureCoordinates * TextureSize;
 
-    // Convert blur strength into UV offset
+    // convert blur strength into UV offset
     float2 texelOffset = float2(BlurStrength, BlurStrength) * 0.001;
 
-    // 1D Gaussian weights (sigma ≈ 1.0), normalized
+    // 1d gaussian weights (sigma ≈ 1.0), normalized
     float weights[5] = {
         0.06136,
         0.24477,
@@ -41,7 +41,7 @@ float4 MainPS(VertexShaderOutput input) : COLOR
 
     float4 color = 0.0;
 
-    // 5x5 Gaussian blur
+    // 5x5 gaussian blur
     for (int x = -2; x <= 2; x++)
     {
         for (int y = -2; y <= 2; y++)
