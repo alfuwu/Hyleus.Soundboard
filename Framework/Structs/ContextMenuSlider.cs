@@ -1,7 +1,7 @@
 ﻿using System;
 
 namespace Hyleus.Soundboard.Framework.Structs;
-public sealed class ContextMenuSlider {
+public struct ContextMenuSlider {
     public string Label { get; init; }
 
     public float Min { get; init; }
@@ -21,4 +21,6 @@ public sealed class ContextMenuSlider {
         t = float.Clamp(t, 0f, 1f);
         SetValue(Min + t * (Max - Min));
     }
+
+    public void SetIsDragging(bool bl) => IsDragging = bl;
 }

@@ -34,6 +34,7 @@ using static SDL2.SDL;
 // - POLISH: clean up settings modal & make it prettier
 
 namespace Hyleus.Soundboard;
+
 class Program {
 #if OS_WINDOWS
     [STAThread]
@@ -55,6 +56,9 @@ public class Main : Game {
     private const int SettingsPadding = 24;
     private const int SettingsLabelWidth = 260;
     private static readonly Color Semitransparent = new(128, 128, 128, 128);
+    private static readonly RasterizerState Scissors = new() {
+        ScissorTestEnable = true
+    };
 
     // core
     private readonly GraphicsDeviceManager _graphics;
@@ -72,8 +76,6 @@ public class Main : Game {
     private MouseState _previousMouse;
     private MouseState _mouse;
 
-    private KeyboardState _previousKeyboard;
-
     // textures
     private SpriteFont _font;
     private Texture2D _pixel;
@@ -83,7 +85,7 @@ public class Main : Game {
     private Effect _blur;
     private Effect _menu;
     private Effect _rounded;
-    
+
     // colors
     private Color _btn;
     private Color _btnHover;
@@ -94,13 +96,12 @@ public class Main : Game {
     private Color _ctxPressed;
     private Color _blurColor = Color.White;
     private Color _settingsColor = Color.Transparent;
-    
+
     // audio device stuff
     private string _preferredInput = null;
     private string _preferredOutput = null;
     private string _preferredRegularOutput = null;
     private bool _hasOwnCable = false;
-
 
     // context menu
     private readonly (string name, Action onClick)[] _menuItems;
@@ -114,7 +115,8 @@ public class Main : Game {
     private Rectangle? _ctxRect = null;
     private bool _generalCtx = false; // hacky
     private readonly List<ContextMenuSlider> _ctxSliders = [];
-    private ContextMenuSlider _activeSlider = null;
+    private ContextMenuSlider? _activeSlider = null;
+    private TextBox _text = new();
 
     // settings stuff
     private readonly List<SettingsItem> _settingsItems = [];
@@ -131,6 +133,7 @@ public class Main : Game {
 
     // misc
     private bool _wasActive;
+    private Rectangle _voiceChangerButton;
 
     public static Vector2I WindowSize {
         get => new(Instance._graphics.PreferredBackBufferWidth, Instance._graphics.PreferredBackBufferHeight);
@@ -140,11 +143,12 @@ public class Main : Game {
     public static int ScreenWidth { get; set; } = 1280;
     public static int ScreenHeight { get; set; } = 720;
 
-    private int _categoryListSize = 96;
+    private int _categoryListSize = 104;
     private int CategoryListSize {
         get => _categoryListSize;
         set {
             _categoryListSize = value;
+            BuildSoundboardCategories();
             BuildSoundboardGrid();
         }
     }
@@ -174,6 +178,7 @@ public class Main : Game {
 
     // scrolling
     private int _scrollPosition = 0;
+    private int _catScroll = 0;
     private int _settingsScroll = 0;
 
     public Main() {
@@ -263,7 +268,7 @@ public class Main : Game {
         ];
         _catListItems = [
             ("Create Category", () => {
-                
+
             }),
         ];
     }
@@ -297,42 +302,41 @@ public class Main : Game {
                     _menu.Parameters["Color3"]?.SetValue(((Color)updated).ToVector3());
                     break;
                 case nameof(Preferences.PlaySoundsToSystem):
-                    _audio.PlaySoundsToSystem((bool)updated);
+                    _audio.PlaySoundsToSystem((Ref<bool>)(object)updated);
                     break;
                 case nameof(Preferences.PlayVoiceChangerToSystem):
-                    _audio.PlayVoiceChangerToSystem((bool)updated);
+                    _audio.PlayVoiceChangerToSystem((Ref<bool>)(object)updated);
                     break;
                 case nameof(Preferences.PlayMicToSystem):
-                    _audio.PlayMicToSystem((bool)updated);
+                    _audio.PlayMicToSystem((Ref<bool>)(object)updated);
                     break;
                 case nameof(Preferences.VolumeMin):
-                    var f = (Ref<float>)updated;
+                    var f = (Ref<float>)(object)updated;
                     f.Value = float.Min(float.Max(0, f.Value), Preferences.VolumeMax);
                     break;
                 case nameof(Preferences.SpeedMin):
-                    f = (Ref<float>)updated;
+                    f = (Ref<float>)(object)updated;
                     f.Value = float.Min(float.Max(float.Epsilon, f.Value), Preferences.SpeedMax);
                     break;
                 default:
                     break;
             }
-            
+
             return true;
         };
-        
+
         Log.Info("User preferences loaded successfully.");
 
         try {
             _audio = new AudioEngine(_hasOwnCable, Preferences.AudioFrequency);
         } catch (Exception e) {
-            if (e.Message.Contains("VB-Audio Cable")) {
+            if (e.Message.Contains("VB-Audio Cable"))
                 ShowInstallPrompt();
-                Exit();
-            }
             return;
         }
 
         SDL_SetWindowMinimumSize(Window.Handle, 480, 270);
+        _ = SDL_Init(SDL_INIT_VIDEO);
 
         _filter = new SDL_EventFilter(HandleSDLEvent);
         SDL_AddEventWatch(_filter, IntPtr.Zero);
@@ -419,165 +423,9 @@ public class Main : Game {
         _mouse = Mouse.GetState();
 
         Interpolation.Update(gameTime);
+        TextBox.ProcessInput(Keyboard.GetState(), gameTime.ElapsedGameTime.TotalSeconds);
 
-        // closing the settings menu
-        if (_mouse.LeftButton == ButtonState.Pressed &&
-            _previousMouse.LeftButton == ButtonState.Released &&
-            !_settings.Contains(_mouse.Position) &&
-            _settingsOpen &&
-            IsActive &&
-            new Rectangle(Point.Zero, Window.ClientBounds.Size).Contains(_mouse.Position)
-        ) {
-            var param = _blur.Parameters["BlurStrength"];
-            Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
-            Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
-            Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.Transparent, 0.5f);
-            Task.Run(async () => {
-                await Task.Delay(500);
-                _settingsOpen = false;
-            });
-        }
-
-        bool skipPressed = !_wasActive && IsActive;
-        bool lc = LeftClick();
-        bool click = _mouse.LeftButton == ButtonState.Pressed &&
-            (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
-        bool left = _mouse.LeftButton == ButtonState.Released &&
-            (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
-
-        // context menu clicky clackies
-        if ((_ctxItem != null || _ctxCat != null || _generalCtx) && _ctxRect.HasValue && IsActive) {
-            left = _mouse.LeftButton == ButtonState.Released &&
-                    (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
-            for (int i = 0; i < _currentMenuItems.Length; i++) {
-                Rectangle rect = GetMenuItemRect(i);
-
-                if (left && rect.Contains(_mouse.Position)) {
-                    _currentMenuItems[i].onClick.Invoke();
-                    ResetCtxMenu();
-                    left = false;
-                    break;
-                }
-            }
-
-            foreach (var slider in _ctxSliders) {
-                Rectangle sliderRect = GetSliderRect(slider);
-
-                if (click && sliderRect.Contains(_mouse.Position)) {
-                    _activeSlider = slider;
-                    slider.IsDragging = true;
-                }
-            }
-
-            if (_activeSlider != null) {
-                Rectangle sliderRect = GetSliderRect(_activeSlider);
-
-                int barX = sliderRect.X + 16;
-                float barWidth = sliderRect.Width - 32;
-
-                float t = (_mouse.X - barX) / barWidth;
-                _activeSlider.SetFromNormalized(t);
-                left = false;
-            }
-        }
-        // dragging soundboard buttons to reposition/move them into a new category
-        if (_draggingIdx < 0) {
-            if (lc) {
-                if (!_dragStart.HasValue)
-                    _dragStart = _mouse.Position;
-                else if (float.Abs(Vector2.Distance(_dragStart.Value.ToVector2(), _mouse.Position.ToVector2())) > DragThreshold) {
-                    ResetCtxMenu();
-                    for (int i = 0; i < _buttons.Length; i++)
-                        if (_buttons[i].Bounds.Contains(_dragStart.Value))
-                            _draggingIdx = i;
-                    if (_draggingIdx >= 0)
-                        _dragOffset = _mouse.Position - _buttons[_draggingIdx].Bounds.Location;
-                    _dragStart = null;
-                }
-            } else if (_dragStart.HasValue) {
-                _dragStart = null;
-            }
-        }
-        if (left && _draggingIdx >= 0) {
-            // applying drag stuff
-            int moveIdx = GetHoverIndex();
-            if (moveIdx != _draggingIdx) {
-                if (moveIdx == -1) {
-                    // category moving
-                } else {
-                    SoundboardItem sound = _sounds[_draggingIdx];
-                    int soundIdx = _sounds.IndexOf(sound);
-                    if (moveIdx >= soundIdx)
-                        moveIdx--;
-                    _sounds.Remove(sound);
-                    _sounds.Insert(moveIdx, sound);
-                    SaveSounds();
-                    BuildSoundboardGrid();
-                }
-            }
-            _draggingIdx = -1;
-        } else if ((left ||
-            _mouse.RightButton == ButtonState.Released &&
-            (_previousMouse.RightButton == ButtonState.Pressed || skipPressed)) &&
-            (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) &&
-            !_settingsOpen && IsActive
-        ) {
-            ResetCtxMenu();
-
-            // clicking soundboard categories
-            foreach (var cat in _catButtons) {
-                if (MouseHover(cat.Bounds)) {
-                    if (left) {
-                        _currentCat = cat.Item.UUID;
-                        BuildSoundboardGrid();
-                    } else {
-                        _ctxPos = _mouse.Position;
-                        _ctxCat = cat.Item;
-                    }
-                }
-            }
-
-            // clicking soundboad buttons
-            foreach (var button in _buttons) {
-                if (MouseHover(button.Bounds)) {
-                    if (left) {
-                        if (button.Item.SoundLocation != null)
-                            _audio.PlaySound(button.Item);
-                    } else {
-                        _ctxPos = _mouse.Position;
-                        _ctxItem = button.Item;
-                        BuildContextSliders(_ctxItem);
-                    }
-                    break;
-                }
-            }
-
-            if (_ctxItem == null && _ctxCat == null && !left) {
-                _ctxPos = _mouse.Position;
-                _generalCtx = true;
-            }
-
-            // opening settings menu
-            var bounds = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
-            if (MouseHover(bounds)) {
-                _settingsOpen = true;
-                var param = _blur.Parameters["BlurStrength"];
-                Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
-                Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
-                Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
-            }
-        }
-
-        // resetting ctx menu sliders
-        if (_mouse.LeftButton == ButtonState.Released && _activeSlider != null) {
-            _activeSlider.IsDragging = false;
-            _activeSlider = null;
-            SaveSounds();
-        }
-
-        // calculating scroll delta stuff
-        if (_mouse.ScrollWheelValue != _previousMouse.ScrollWheelValue && (!Preferences.PreventScrollWhenContextMenuIsOpen || _ctxItem == null))
-            CalculateScroll();
+        DoClickyClacky();
 
         _wasActive = IsActive;
 
@@ -604,7 +452,7 @@ public class Main : Game {
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
         _spriteBatch.Draw(
             _pixel,
-            new Rectangle(0, 0, CategoryListSize, ScreenHeight),
+            new Rectangle(8, 0, CategoryListSize, ScreenHeight),
             new Color(20, 19, 19, 176)
         );
         _spriteBatch.End();
@@ -616,22 +464,47 @@ public class Main : Game {
             MouseHover(_settingsButton) ? LeftClick() ?
                 _btnPressed : _btnHover : _btn
         );
+        _spriteBatch.Draw(
+            _pixel,
+            _voiceChangerButton,
+            MouseHover(_voiceChangerButton) ? LeftClick() ?
+                _btnPressed : _btnHover : _btn
+        );
+        _spriteBatch.End();
 
+        GraphicsDevice.ScissorRectangle = new Rectangle(0, 0, CategoryListSize, ScreenHeight - CategoryListSize * 2);
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors, effect: _rounded);
+        for (int i = 0; i < _catButtons.Length; i++) {
+            var btn = _catButtons[i];
+            DrawButton(btn, i);
+            if (btn.Item.UUID == _currentCat)
+                _spriteBatch.Draw(_pixel, new Rectangle(6, btn.Bounds.Y + 8, 5, btn.Bounds.Height - 16), Color.White);
+        }
+
+        _spriteBatch.End();
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
         for (int i = 0; i < _buttons.Length; i++) {
             if (i == _draggingIdx)
                 continue;
             int samplePos = GetSamplePos(i);
-            DrawButton(i, samplePos != i ? _buttons[samplePos].Bounds.Location : null);
+            DrawButton(_buttons[i], i, samplePos != i ? _buttons[samplePos].Bounds.Location : null);
         }
         if (_draggingIdx >= 0)
-            DrawButton(_draggingIdx, _mouse.Position - _dragOffset);
+            DrawButton(_buttons[_draggingIdx], _draggingIdx, _mouse.Position - _dragOffset);
         _spriteBatch.End();
 
         if (_ctxItem != null || _ctxCat != null || _generalCtx)
             DrawContextMenu(_ctxPos);
-        
+
         if (s)
             DrawSettings();
+
+        _spriteBatch.Begin();
+        DrawTextBox(_text);
+        _spriteBatch.End();
+        _spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors);
+        DrawTextBoxText(_text, gameTime.TotalGameTime.TotalSeconds);
+        _spriteBatch.End();
     }
 
     private int GetHoverIndex() {
@@ -663,8 +536,7 @@ public class Main : Game {
         return i;
     }
 
-    private void DrawButton(int idx, Point? pos = null) {
-        var button = _buttons[idx];
+    private void DrawButton<T>(Button<T> button, int idx, Point? pos = null) {
         var dragged = idx == _draggingIdx;
         var rect = pos.HasValue ?
             button.Bounds.WithPosition(pos.Value) :
@@ -683,6 +555,80 @@ public class Main : Game {
             dragged ? Semitransparent : MouseHover(rect) ? LeftClick() ?
                 Color.Gray : Color.DarkGray : Color.White
         );
+    }
+
+    private void DrawTextBox(TextBox text, Color? color = null) {
+        var c = color ?? _btn * Semitransparent;
+        var outline = new Color(c.R * 2, c.G * 2, c.B * 2, c.A);
+        _spriteBatch.Draw(
+            _pixel,
+            text.Bounds.Exflate(-1, -1),
+            c
+        );
+
+        // outline
+        // left
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(text.Bounds.X, text.Bounds.Y, 1, text.Bounds.Height),
+            outline
+        );
+        // top
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(text.Bounds.X + 1, text.Bounds.Y, text.Bounds.Width - 2, 1),
+            outline
+        );
+        // right
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(text.Bounds.X + text.Bounds.Width, text.Bounds.Y, 1, text.Bounds.Height),
+            outline
+        );
+        // bottom
+        _spriteBatch.Draw(
+            _pixel,
+            new Rectangle(text.Bounds.X + 1, text.Bounds.Y + text.Bounds.Height, text.Bounds.Width - 2, 1),
+            outline
+        );
+    }
+    private void DrawTextBoxText(TextBox text, double seconds, Color? color = null) {
+        GraphicsDevice.ScissorRectangle = text.Bounds;
+        var c = color ?? Color.White;
+
+        if (text.SelectionStart >= 0) {
+            string before = text.Text[..text.SelectionStart];
+            string selection = text.Text[text.SelectionStart..text.SelectionEnd];
+            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.3f) + text.Bounds.X, text.Bounds.Y, (int)(_font.MeasureString(selection).X * 0.3f), text.Bounds.Height);
+            _spriteBatch.Draw(
+                _pixel,
+                bounds,
+                Color.LightBlue
+            );
+        }
+
+        _spriteBatch.DrawString(
+            _font,
+            text.Text,
+            text.Bounds.Location.ToVector2() + new Vector2(3, 0),
+            c,
+            0,
+            Vector2.Zero,
+            0.3f,
+            SpriteEffects.None,
+            0
+        );
+
+        // caret
+        if (text.IsFocused && double.Sin(seconds * 3) > 0) {
+            string before = text.Text[..text.Caret];
+            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.3f) + text.Bounds.X, text.Bounds.Y, 1, text.Bounds.Height);
+            _spriteBatch.Draw(
+                _pixel,
+                bounds,
+                c
+            );
+        }
     }
 
     private void DrawContextMenu(Point position) {
@@ -747,7 +693,6 @@ public class Main : Game {
 
         _spriteBatch.Draw(_pixel, divider, Color.White * 0.08f);
 
-        _ctxSliders.RemoveAll(slider => slider == null);
         foreach (var slider in _ctxSliders) {
             Rectangle rect = GetSliderRect(slider);
 
@@ -809,13 +754,9 @@ public class Main : Game {
         _spriteBatch.End();
         _rounded.Parameters["TextureSize"].SetValue(texVec);
 
-        var rasterizer = new RasterizerState {
-            ScissorTestEnable = true
-        };
-
         // clip settings items
         GraphicsDevice.ScissorRectangle = _settings;
-        _spriteBatch.Begin(SpriteSortMode.Immediate, rasterizerState: rasterizer);
+        _spriteBatch.Begin(SpriteSortMode.Immediate, rasterizerState: Scissors);
         for (int i = 0; i < _settingsItems.Count; i++) {
             var item = _settingsItems[i];
             var row = new Rectangle(
@@ -890,11 +831,15 @@ public class Main : Game {
         _blur.Parameters["TextureSize"].SetValue(new Vector2(ScreenWidth, ScreenHeight));
         _menu.Parameters["Resolution"]?.SetValue(new Vector2(ScreenWidth, ScreenHeight));
         _menu.Parameters["AspectRatio"]?.SetValue((float)ScreenWidth / ScreenHeight);
-        CalculateScroll();
+        BuildSoundboardCategories();
         BuildSoundboardGrid();
         BuildSettingsItems();
-        _settingsButton = new Rectangle(8, ScreenHeight - 8 - (CategoryListSize - 16), CategoryListSize - 16, CategoryListSize - 16);
-        
+        CalculateScroll();
+        _text.Bounds = new Rectangle(ScreenWidth / 2 - 120, ScreenHeight / 2 - 30, 240, 60);
+        int size = CategoryListSize - 16;
+        _settingsButton = new Rectangle(16, ScreenHeight - 8 - size, size, size);
+        _voiceChangerButton = new Rectangle(16, ScreenHeight - 16 - size * 2, size, size);
+
         int settingsWidth = (int)(ScreenWidth * 0.6f);
         int settingsHeight = (int)(ScreenHeight * 0.7f);
 
@@ -908,27 +853,196 @@ public class Main : Game {
         blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
     }
 
+    private void DoClickyClacky() {
+        // closing the settings menu
+        if (_mouse.LeftButton == ButtonState.Pressed &&
+            _previousMouse.LeftButton == ButtonState.Released &&
+            !_settings.Contains(_mouse.Position) &&
+            _settingsOpen &&
+            IsActive &&
+            new Rectangle(Point.Zero, Window.ClientBounds.Size).Contains(_mouse.Position)
+        ) {
+            var param = _blur.Parameters["BlurStrength"];
+            Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
+            Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
+            Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.Transparent, 0.5f);
+            Task.Run(async () => {
+                await Task.Delay(500);
+                _settingsOpen = false;
+            });
+        }
+
+        bool skipPressed = !_wasActive && IsActive;
+        bool lc = LeftClick();
+        bool click = _mouse.LeftButton == ButtonState.Pressed &&
+            (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
+
+        // context menu clicky clackies
+        if ((_ctxItem != null || _ctxCat != null || _generalCtx) && _ctxRect.HasValue && IsActive) {
+            bool boolean = _mouse.LeftButton == ButtonState.Released &&
+                    (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
+            for (int i = 0; i < _currentMenuItems.Length; i++) {
+                Rectangle rect = GetMenuItemRect(i);
+
+                if (boolean && rect.Contains(_mouse.Position)) {
+                    _currentMenuItems[i].onClick.Invoke();
+                    ResetCtxMenu();
+                    return;
+                }
+            }
+
+            foreach (var slider in _ctxSliders) {
+                Rectangle sliderRect = GetSliderRect(slider);
+
+                if (click && sliderRect.Contains(_mouse.Position)) {
+                    _activeSlider = slider;
+                    slider.SetIsDragging(true);
+                }
+            }
+
+            if (_activeSlider.HasValue) {
+                Rectangle sliderRect = GetSliderRect(_activeSlider.Value);
+
+                int barX = sliderRect.X + 16;
+                float barWidth = sliderRect.Width - 32;
+
+                float t = (_mouse.X - barX) / barWidth;
+                _activeSlider.Value.SetFromNormalized(t);
+                return;
+            }
+        }
+        // dragging soundboard buttons to reposition/move them into a new category
+        if (_draggingIdx < 0) {
+            if (lc) {
+                if (!_dragStart.HasValue)
+                    _dragStart = _mouse.Position;
+                else if (float.Abs(Vector2.Distance(_dragStart.Value.ToVector2(), _mouse.Position.ToVector2())) > DragThreshold) {
+                    ResetCtxMenu();
+                    for (int i = 0; i < _buttons.Length; i++)
+                        if (_buttons[i].Bounds.Contains(_dragStart.Value))
+                            _draggingIdx = i;
+                    if (_draggingIdx >= 0)
+                        _dragOffset = _mouse.Position - _buttons[_draggingIdx].Bounds.Location;
+                    _dragStart = null;
+                }
+            } else if (_dragStart.HasValue) {
+                _dragStart = null;
+            }
+        }
+        bool left = _mouse.LeftButton == ButtonState.Released &&
+            (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
+        if (left && _draggingIdx >= 0) {
+            // applying drag stuff
+            int moveIdx = GetHoverIndex();
+            if (moveIdx != _draggingIdx) {
+                if (moveIdx == -1) {
+                    // category moving
+                } else {
+                    SoundboardItem sound = _sounds[_draggingIdx];
+                    int soundIdx = _sounds.IndexOf(sound);
+                    if (moveIdx >= soundIdx)
+                        moveIdx--;
+                    _sounds.Remove(sound);
+                    _sounds.Insert(moveIdx, sound);
+                    SaveSounds();
+                    BuildSoundboardGrid();
+                }
+            }
+            _draggingIdx = -1;
+        } else if ((left ||
+            _mouse.RightButton == ButtonState.Released &&
+            (_previousMouse.RightButton == ButtonState.Pressed || skipPressed)) &&
+            (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) &&
+            !_settingsOpen && IsActive
+        ) {
+            ResetCtxMenu();
+
+            // clicking soundboard categories
+            foreach (var cat in _catButtons) {
+                if (MouseHover(cat.Bounds)) {
+                    if (left) {
+                        _currentCat = cat.Item.UUID;
+                        BuildSoundboardGrid();
+                    } else {
+                        _ctxPos = _mouse.Position;
+                        _ctxCat = cat.Item;
+                    }
+                }
+            }
+
+            // clicking soundboad buttons
+            foreach (var button in _buttons) {
+                if (MouseHover(button.Bounds)) {
+                    if (left) {
+                        if (button.Item.SoundLocation != null)
+                            _audio.PlaySound(button.Item);
+                    } else {
+                        _ctxPos = _mouse.Position;
+                        _ctxItem = button.Item;
+                        BuildContextSliders(_ctxItem);
+                    }
+                    break;
+                }
+            }
+
+            if (_ctxItem == null && _ctxCat == null && !left) {
+                _ctxPos = _mouse.Position;
+                _generalCtx = true;
+            }
+
+            // opening settings menu
+            if (MouseHover(_settingsButton)) {
+                _settingsOpen = true;
+                var param = _blur.Parameters["BlurStrength"];
+                Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
+                Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+                Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
+            } else if (MouseHover(_voiceChangerButton)) {
+
+            } else if (MouseHover(_text.Bounds)) {
+                _text.Focus();
+            }
+        }
+
+        // resetting ctx menu sliders
+        if (_mouse.LeftButton == ButtonState.Released && _activeSlider != null) {
+            _activeSlider.Value.SetIsDragging(false);
+            _activeSlider = null;
+            SaveSounds();
+        }
+
+        // calculating scroll delta stuff
+        if (_mouse.ScrollWheelValue != _previousMouse.ScrollWheelValue && (!Preferences.PreventScrollWhenContextMenuIsOpen || _ctxItem == null))
+            CalculateScroll();
+    }
+
     private void CalculateScroll() {
-        int sp = _settingsOpen ? _settingsScroll : _scrollPosition;
+        int sp = _settingsOpen ? _settingsScroll : _mouse.X < CategoryListSize ? _catScroll : _scrollPosition;
         int offset = (int)((_previousMouse.ScrollWheelValue - _mouse.ScrollWheelValue) / (_settingsOpen ? 5f : 10f));
         int newScroll = int.Clamp(
             sp - offset, -(_settingsOpen ?
                 int.Max((_settingsItems.Count * SettingsRowHeight) - (int)(_settings.Height * 0.9f), 0) :
-                _buttons.Length > 0 ? Rows * _buttonSize : 0),
+                _mouse.X < CategoryListSize ? (_catButtons.Length - 1) * (CategoryListSize - 8) :
+                Rows * _buttonSize),
             0
         );
         int delta = newScroll - sp;
         if (_settingsOpen) {
             _settingsScroll = newScroll;
+            return;
+        } else if (_mouse.X < CategoryListSize) {
+            _catScroll = newScroll;
+            foreach (var btn in _catButtons)
+                btn.Bounds.Y += delta;
         } else {
             _scrollPosition = newScroll;
             foreach (var btn in _buttons)
                 btn.Bounds.Y += delta;
-            if (Preferences.CloseContextMenuOnScroll)
-                ResetCtxMenu();
-            else
-                _ctxPos.Y += delta;
         }
+        if (Preferences.CloseContextMenuOnScroll)
+            ResetCtxMenu();
+        else
+            _ctxPos.Y += delta;
     }
 
     private void CalculateButtonColors(Color bg) {
@@ -979,7 +1093,7 @@ public class Main : Game {
             bw.Write(_hasOwnCable);
             bw.Write(Category.FILE_VERSION);
             bw.Write(SoundboardItem.FILE_VERSION);
-            foreach(var c in _categories)
+            foreach (var c in _categories)
                 c.WriteBinary(bw);
             bw.Write((byte)0); // delimiter
             foreach (var i in _sounds)
@@ -1015,10 +1129,11 @@ public class Main : Game {
                 _hasOwnCable = true;
                 SaveSounds();
             }
+            Exit();
         }).Start();
     }
 
-#region Builders
+    #region Builders
     private void BuildContextSliders(SoundboardItem item) {
         _ctxSliders.Clear();
 
@@ -1037,6 +1152,44 @@ public class Main : Game {
             GetValue = () => item.Speed,
             SetValue = v => item.Speed = v
         });
+    }
+
+    public void BuildSoundboardCategories() {
+        int size = CategoryListSize - 16;
+        var buttons = new Button<Category>[_categories.Count + 1];
+        buttons[0] = new Button<Category> {
+            Item = new Category {
+                UUID = null
+            },
+            Bounds = new Rectangle(16, 8 + _catScroll, size, size),
+            Icon = _defaultIcon
+        };
+        for (int i = 0; i < _categories.Count; i++) {
+            var bounds = new Rectangle(
+                16,
+                8 + size * (i + 1) + _catScroll,
+                size,
+                size
+            );
+
+            var cat = _categories[i];
+            var oldCat = _catButtons.Find(b => b.Item.UUID == cat.UUID);
+
+            Texture2D icon = oldCat?.Icon;
+            if ((oldCat?.IconLocation != cat.IconLocation) && !string.IsNullOrEmpty(cat.IconLocation) && File.Exists(cat.IconLocation)) {
+                using var fs = File.OpenRead(cat.IconLocation);
+                icon = Texture2D.FromStream(GraphicsDevice, fs);
+            }
+
+            buttons[i + 1] = new Button<Category> {
+                Item = cat,
+                Bounds = bounds,
+                Icon = icon,
+                IconLocation = cat.IconLocation
+            };
+        }
+
+        _catButtons = buttons;
     }
 
     public void BuildSoundboardGrid() {
@@ -1115,7 +1268,7 @@ public class Main : Game {
             _settingsItems.Add(new SettingsItem(prop, prop.Name, desc?.Description, type));
         }
     }
-#region Settings drawers
+    #region Settings drawers
     private void DrawBool(SettingsItem item, Rectangle row) {
         var box = new Rectangle(row.Right - 32, row.Y + 12, 24, 24);
 
@@ -1190,10 +1343,10 @@ public class Main : Game {
 
         item.Set(new Color(r, g, b));
     }
-#endregion
-#endregion
+    #endregion
+    #endregion
 
-#region SDL hacking
+    #region SDL hacking
     private unsafe int HandleSDLEvent(IntPtr userdata, IntPtr ptr) {
         SDL_Event* e = (SDL_Event*)ptr;
 
@@ -1231,5 +1384,5 @@ public class Main : Game {
         }
     }
 #endif
-#endregion
+    #endregion
 }
