@@ -34,7 +34,6 @@ using static SDL2.SDL;
 // - POLISH: clean up settings modal & make it prettier
 
 namespace Hyleus.Soundboard;
-
 class Program {
 #if OS_WINDOWS
     [STAThread]
@@ -271,6 +270,8 @@ public class Main : Game {
 
             }),
         ];
+
+        Window.TextInput += (sender, args) => TextBox.ProcessInput(args.Key, args.Character);
     }
 
     protected override void Initialize() {
@@ -853,6 +854,7 @@ public class Main : Game {
         blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
     }
 
+    // BUG: holding left click on the window after it wasnt in focus acts as though you right clicked for some reason
     private void DoClickyClacky() {
         // closing the settings menu
         if (_mouse.LeftButton == ButtonState.Pressed &&
@@ -999,8 +1001,12 @@ public class Main : Game {
                 Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
             } else if (MouseHover(_voiceChangerButton)) {
 
-            } else if (MouseHover(_text.Bounds)) {
+            }
+            
+            if (MouseHover(_text.Bounds)) {
                 _text.Focus();
+            } else {
+                _text.Unfocus();
             }
         }
 
