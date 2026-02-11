@@ -36,6 +36,7 @@ public class SoundboardItem() {
             Speed = float.Max(reader.ReadSingle(), float.Epsilon),
             Keybind = reader.ReadByte() == 0 ? null : (Keys)reader.ReadUInt16(),
             UUID = reader.ReadGuid(),
+            CategoryID = reader.ReadByte() == 0 ? null : reader.ReadGuid(),
             _flags = reader.ReadByte()
         };
         return item;
@@ -59,6 +60,9 @@ public class SoundboardItem() {
         if (Keybind != null)
             writer.Write((ushort)Keybind);
         writer.Write(UUID);
+        writer.Write((byte)(CategoryID == null ? 0 : 1));
+        if (CategoryID != null)
+            writer.Write(CategoryID.Value);
         writer.Write(_flags);
     }
 }

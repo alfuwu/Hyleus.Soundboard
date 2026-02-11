@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Threading.Tasks;
-using Hyleus.Soundboard.Framework;
 using Hyleus.Soundboard.Framework.Enums;
 using Hyleus.Soundboard.Framework.Structs;
 using Hyleus.Soundboard.Framework.TypeConverters;

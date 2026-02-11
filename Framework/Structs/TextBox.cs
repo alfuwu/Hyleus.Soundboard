@@ -21,6 +21,15 @@ public partial class TextBox() {
     public int SelectionStart = -1;
     public int SelectionEnd;
     public bool Numerical;
+    public float Transparency;
+
+    public delegate bool Event();
+    public delegate bool FocusedEvent(TextBox focusChanged);
+    public delegate bool TextChangedEvent(string text);
+    public event TextChangedEvent OnInputEntered;
+    public event FocusedEvent OnFocused;
+    public event FocusedEvent OnUnfocused;
+    public event TextChangedEvent OnInputChanged;
 
     public bool IsFocused => _focusedTextBox == this;
 
@@ -50,11 +59,17 @@ public partial class TextBox() {
     public static void ProcessInput(Keys key, char character) => _focusedTextBox?.PressKey(key, character);
 
     public void Focus() {
-        _focusedTextBox?.Unfocus();
+        if (IsFocused)
+            return;
+        TextBox oldFocus = _focusedTextBox;
+        if (OnFocused?.Invoke(oldFocus) == false || oldFocus?.Unfocus(this) == false)
+            return;
         _focusedTextBox = this;
     }
 
-    public void Unfocus() {
+    public bool Unfocus(TextBox newFocus = null) {
+        if (!IsFocused || OnUnfocused?.Invoke(newFocus) == false || OnInputEntered?.Invoke(Text) == false)
+            return false;
         _pressed.Clear();
         SelectionStart = -1;
 
@@ -65,6 +80,7 @@ public partial class TextBox() {
         }
 
         _focusedTextBox = null;
+        return true;
     }
 
     public static int GetLastSpace(string before, bool control) {
@@ -214,5 +230,8 @@ public partial class TextBox() {
             Text = oldText;
             Caret = oldCaret;
         }
+
+        if (oldText != Text)
+            OnInputChanged?.Invoke(oldText);
     }
 }

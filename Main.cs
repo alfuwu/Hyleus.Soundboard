@@ -55,6 +55,7 @@ public class Main : Game {
     private const int SettingsPadding = 24;
     private const int SettingsLabelWidth = 260;
     private static readonly Color Semitransparent = new(128, 128, 128, 128);
+    private static readonly List<TextBox> TextBoxes = [];
     private static readonly RasterizerState Scissors = new() {
         ScissorTestEnable = true
     };
@@ -79,6 +80,8 @@ public class Main : Game {
     private SpriteFont _font;
     private Texture2D _pixel;
     private Texture2D _defaultIcon;
+    private Texture2D _settingsIcon;
+    private Texture2D _voiceChangerIcon;
 
     // effects
     private Effect _blur;
@@ -115,7 +118,7 @@ public class Main : Game {
     private bool _generalCtx = false; // hacky
     private readonly List<ContextMenuSlider> _ctxSliders = [];
     private ContextMenuSlider? _activeSlider = null;
-    private TextBox _text = new();
+    private readonly TextBox _text;
 
     // settings stuff
     private readonly List<SettingsItem> _settingsItems = [];
@@ -197,6 +200,7 @@ public class Main : Game {
         WindowSize = new Vector2I(ScreenWidth, ScreenHeight);
         blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
 
+        Window.TextInput += (sender, args) => TextBox.ProcessInput(args.Key, args.Character);
         Window.FileDrop += (_, args) => {
             foreach (var file in args.Files)
                 ImportSound(file);
@@ -256,22 +260,41 @@ public class Main : Game {
                     if (result.IsOk) {
                         i.IconLocation = result.Path;
                         SaveSounds();
-                        BuildSoundboardGrid();
+                        BuildSoundboardCategories();
                     }
                 }).Start();
             }),
             ("Delete", () => {
                 _categories.Remove(_ctxCat);
+                foreach (var sound in _sounds)
+                    if (sound.CategoryID == _ctxCat.UUID)
+                        sound.CategoryID = null;
                 SaveSounds();
+                BuildSoundboardCategories();
+                if (_currentCat == _ctxCat.UUID || _currentCat == null) {
+                    _currentCat = null;
+                    BuildSoundboardGrid();
+                }
             })
         ];
         _catListItems = [
             ("Create Category", () => {
-
+                if (_text.IsFocused)
+                    return;
+                _text.Focus();
+                _text.OnInputEntered += CreateCategory;
             }),
         ];
 
-        Window.TextInput += (sender, args) => TextBox.ProcessInput(args.Key, args.Character);
+        _text = CreateTextBox(1f, (oldFocus) => {
+            FadeInBlur();
+            Interpolation.To("TextTransparency", f => _text.Transparency = f, _text.Transparency, 0f, 0.5f);
+            return true;
+        }, (newFocus) => {
+            FadeOutBlur();
+            Interpolation.To("TextTransparency", f => _text.Transparency = f, _text.Transparency, 1f, 0.5f);
+            return true;
+        });
     }
 
     protected override void Initialize() {
@@ -285,8 +308,8 @@ public class Main : Game {
                     CalculateButtonColors(Preferences.BackgroundColor);
                     break;
                 case nameof(Preferences.MinButtonSize):
-                    if ((float)updated > Preferences.MaxButtonSize)
-                        return false;
+                    var f = (Ref<float>)(object)updated;
+                    f.Value = float.Min(float.Max(0, f.Value), Preferences.MaxButtonSize);
                     goto case nameof(Preferences.MaxButtonSize);
                 case nameof(Preferences.MaxButtonSize):
                 case nameof(Preferences.Padding):
@@ -294,13 +317,13 @@ public class Main : Game {
                     BuildSoundboardGrid();
                     break;
                 case nameof(Preferences.EffectsColor1):
-                    _menu.Parameters["Color1"]?.SetValue(((Color)updated).ToVector3());
+                    _menu.Parameters["Color1"]?.SetValue(((Ref<Color>)(object)updated).Value.ToVector3());
                     break;
                 case nameof(Preferences.EffectsColor2):
-                    _menu.Parameters["Color2"]?.SetValue(((Color)updated).ToVector3());
+                    _menu.Parameters["Color2"]?.SetValue(((Ref<Color>)(object)updated).Value.ToVector3());
                     break;
                 case nameof(Preferences.EffectsColor3):
-                    _menu.Parameters["Color3"]?.SetValue(((Color)updated).ToVector3());
+                    _menu.Parameters["Color3"]?.SetValue(((Ref<Color>)(object)updated).Value.ToVector3());
                     break;
                 case nameof(Preferences.PlaySoundsToSystem):
                     _audio.PlaySoundsToSystem((Ref<bool>)(object)updated);
@@ -312,7 +335,7 @@ public class Main : Game {
                     _audio.PlayMicToSystem((Ref<bool>)(object)updated);
                     break;
                 case nameof(Preferences.VolumeMin):
-                    var f = (Ref<float>)(object)updated;
+                    f = (Ref<float>)(object)updated;
                     f.Value = float.Min(float.Max(0, f.Value), Preferences.VolumeMax);
                     break;
                 case nameof(Preferences.SpeedMin):
@@ -390,6 +413,8 @@ public class Main : Game {
         _pixel = new Texture2D(GraphicsDevice, 1, 1);
         _pixel.SetData([Color.White]);
         _defaultIcon = Content.Load<Texture2D>("DefaultIcon");
+        _settingsIcon = Content.Load<Texture2D>("Settings");
+        _voiceChangerIcon = Content.Load<Texture2D>("DefaultIcon"); // TODO: make icon
 
         //var iChannel2 = Content.Load<Texture2D>("iChannel2");
         //_graphics.GraphicsDevice.Textures[2] = iChannel2;
@@ -437,8 +462,8 @@ public class Main : Game {
     }
 
     protected override void Draw(GameTime gameTime) {
-        bool s = _settingsOpen;
-        if (s)
+        bool blur = _blur.Parameters["BlurStrength"].GetValueSingle() > 0;
+        if (blur)
             GraphicsDevice.SetRenderTarget(blurTarget);
         GraphicsDevice.Clear(Preferences.BackgroundColor);
 
@@ -466,10 +491,22 @@ public class Main : Game {
                 _btnPressed : _btnHover : _btn
         );
         _spriteBatch.Draw(
+            _settingsIcon,
+            _settingsButton,
+            MouseHover(_settingsButton) ? LeftClick() ?
+                Color.Gray : Color.DarkGray : Color.White
+        );
+        _spriteBatch.Draw(
             _pixel,
             _voiceChangerButton,
             MouseHover(_voiceChangerButton) ? LeftClick() ?
                 _btnPressed : _btnHover : _btn
+        );
+        _spriteBatch.Draw(
+            _voiceChangerIcon,
+            _voiceChangerButton,
+            MouseHover(_voiceChangerButton) ? LeftClick() ?
+                Color.Gray : Color.DarkGray : Color.White
         );
         _spriteBatch.End();
 
@@ -477,7 +514,7 @@ public class Main : Game {
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors, effect: _rounded);
         for (int i = 0; i < _catButtons.Length; i++) {
             var btn = _catButtons[i];
-            DrawButton(btn, i);
+            DrawButton(btn);
             if (btn.Item.UUID == _currentCat)
                 _spriteBatch.Draw(_pixel, new Rectangle(6, btn.Bounds.Y + 8, 5, btn.Bounds.Height - 16), Color.White);
         }
@@ -497,20 +534,31 @@ public class Main : Game {
         if (_ctxItem != null || _ctxCat != null || _generalCtx)
             DrawContextMenu(_ctxPos);
 
-        if (s)
-            DrawSettings();
+        if (blur)
+            DrawBlur();
 
-        _spriteBatch.Begin();
-        DrawTextBox(_text);
-        _spriteBatch.End();
-        _spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors);
-        DrawTextBoxText(_text, gameTime.TotalGameTime.TotalSeconds);
-        _spriteBatch.End();
+        foreach (var text in TextBoxes) {
+            if (text.Transparency >= 1)
+                continue;
+            _spriteBatch.Begin();
+            DrawTextBox(text, _btn * (1 - text.Transparency));
+            _spriteBatch.End();
+            _spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors);
+            DrawTextBoxText(text, gameTime.TotalGameTime.TotalSeconds, Color.White * (1 - text.Transparency));
+            _spriteBatch.End();
+        }
+
+        if (_settingsOpen)
+            DrawSettings();
     }
 
     private int GetHoverIndex() {
-        if (_mouse.Position.X <= CategoryListSize)
+        if (_mouse.Position.X <= CategoryListSize) {
+            for (int i = 0; i < _catButtons.Length; i++)
+                if (_catButtons[i].Bounds.Exflate(8, 4).Contains(_mouse.Position))
+                    return -i - 1;
             return -1;
+        }
         int lastSP = -1;
         for (int i = 0; i < _buttons.Length; i++) {
             if (i == _draggingIdx)
@@ -524,7 +572,9 @@ public class Main : Game {
     }
 
     private int GetSamplePos(int i) {
-        if (_draggingIdx >= 0 && _mouse.Position.X > CategoryListSize) {
+        if (_draggingIdx >= 0) {
+            if (_mouse.Position.X <= CategoryListSize)
+                return _draggingIdx < i ? i - 1 : i;
             int row = i / _currentColumns;
             int y = row * _buttonSize + _scrollPosition;
             int sizeY = Preferences.Margin + _buttonSize + Preferences.Padding;
@@ -537,7 +587,7 @@ public class Main : Game {
         return i;
     }
 
-    private void DrawButton<T>(Button<T> button, int idx, Point? pos = null) {
+    private void DrawButton<T>(Button<T> button, int? idx = null, Point? pos = null) {
         var dragged = idx == _draggingIdx;
         var rect = pos.HasValue ?
             button.Bounds.WithPosition(pos.Value) :
@@ -600,7 +650,7 @@ public class Main : Game {
         if (text.SelectionStart >= 0) {
             string before = text.Text[..text.SelectionStart];
             string selection = text.Text[text.SelectionStart..text.SelectionEnd];
-            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.3f) + text.Bounds.X, text.Bounds.Y, (int)(_font.MeasureString(selection).X * 0.3f), text.Bounds.Height);
+            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.25f) + text.Bounds.X, text.Bounds.Y, (int)(_font.MeasureString(selection).X * 0.25f), text.Bounds.Height);
             _spriteBatch.Draw(
                 _pixel,
                 bounds,
@@ -615,7 +665,7 @@ public class Main : Game {
             c,
             0,
             Vector2.Zero,
-            0.3f,
+            0.25f,
             SpriteEffects.None,
             0
         );
@@ -623,7 +673,7 @@ public class Main : Game {
         // caret
         if (text.IsFocused && double.Sin(seconds * 3) > 0) {
             string before = text.Text[..text.Caret];
-            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.3f) + text.Bounds.X, text.Bounds.Y, 1, text.Bounds.Height);
+            var bounds = new Rectangle((int)(_font.MeasureString(before).X * 0.25f) + text.Bounds.X, text.Bounds.Y + 5, 1, text.Bounds.Height - 10);
             _spriteBatch.Draw(
                 _pixel,
                 bounds,
@@ -736,7 +786,7 @@ public class Main : Game {
         _spriteBatch.End();
     }
 
-    private void DrawSettings() {
+    private void DrawBlur() {
         GraphicsDevice.SetRenderTarget(null);
         // draw the background but blurred
         _spriteBatch.Begin(SpriteSortMode.Deferred, effect: _blur);
@@ -746,7 +796,21 @@ public class Main : Game {
             _blurColor
         );
         _spriteBatch.End();
+    }
 
+    private void FadeOutBlur() {
+        var param = _blur.Parameters["BlurStrength"];
+        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
+        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
+    }
+
+    private void FadeInBlur() {
+        var param = _blur.Parameters["BlurStrength"];
+        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
+        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+    }
+
+    private void DrawSettings() {
         // draw rounded settings modal
         var texVec = _rounded.Parameters["TextureSize"].GetValueVector2();
         _rounded.Parameters["TextureSize"].SetValue(new Vector2(_settings.Width, _settings.Height));
@@ -779,7 +843,9 @@ public class Main : Game {
                         DrawCycle(item, row, av.Values);
                     else {
                         var range = item.Property.GetCustomAttribute<RangeAttribute>();
-                        DrawSlider(item, row, 0, 256);
+                        int min = range?.Minimum as int? ?? 0;
+                        int max = range?.Maximum as int? ?? 256;
+                        DrawSlider(item, row, min, max);
                     }
                     break;
                 case SettingsControlType.Float:
@@ -788,7 +854,9 @@ public class Main : Game {
                         DrawCycle(item, row, av.Values);
                     else {
                         var range = item.Property.GetCustomAttribute<RangeAttribute>();
-                        DrawSlider(item, row, 0, 10);
+                        float min = range?.Minimum as float? ?? 0;
+                        float max = range?.Maximum as float? ?? 10;
+                        DrawSlider(item, row, min, max);
                     }
                     break;
                 case SettingsControlType.Enum:
@@ -864,9 +932,7 @@ public class Main : Game {
             IsActive &&
             new Rectangle(Point.Zero, Window.ClientBounds.Size).Contains(_mouse.Position)
         ) {
-            var param = _blur.Parameters["BlurStrength"];
-            Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
-            Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
+            FadeOutBlur();
             Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.Transparent, 0.5f);
             Task.Run(async () => {
                 await Task.Delay(500);
@@ -935,20 +1001,24 @@ public class Main : Game {
             (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
         if (left && _draggingIdx >= 0) {
             // applying drag stuff
-            int moveIdx = GetHoverIndex();
-            if (moveIdx != _draggingIdx) {
-                if (moveIdx == -1) {
+            int buttonIdx = GetHoverIndex();
+            SoundboardItem sound = _buttons[_draggingIdx].Item;
+            if (buttonIdx != _draggingIdx) {
+                if (buttonIdx < 0) {
                     // category moving
+                    var cat = _catButtons[-buttonIdx - 1].Item;
+                    sound.CategoryID = cat.UUID;
                 } else {
-                    SoundboardItem sound = _sounds[_draggingIdx];
-                    int soundIdx = _sounds.IndexOf(sound);
-                    if (moveIdx >= soundIdx)
-                        moveIdx--;
+                    // TODO: figure this shit out
+                    // this is causing a lot of crashes when trying to move a soundboard button to the end
+                    bool cap = buttonIdx >= _sounds.IndexOf(sound);
+                    if (cap)
+                        buttonIdx--;
                     _sounds.Remove(sound);
-                    _sounds.Insert(moveIdx, sound);
-                    SaveSounds();
-                    BuildSoundboardGrid();
+                    _sounds.Insert(_sounds.IndexOf(_buttons[buttonIdx].Item) + (cap ? 1 : 0), sound);
                 }
+                SaveSounds();
+                BuildSoundboardGrid();
             }
             _draggingIdx = -1;
         } else if ((left ||
@@ -995,9 +1065,7 @@ public class Main : Game {
             // opening settings menu
             if (MouseHover(_settingsButton)) {
                 _settingsOpen = true;
-                var param = _blur.Parameters["BlurStrength"];
-                Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
-                Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+                FadeInBlur();
                 Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
             } else if (MouseHover(_voiceChangerButton)) {
 
@@ -1110,7 +1178,8 @@ public class Main : Game {
     private void ImportSound(string path) {
         var item = new SoundboardItem {
             Name = Path.GetFileNameWithoutExtension(path),
-            SoundLocation = path
+            SoundLocation = path,
+            CategoryID = _currentCat
         };
 
         AddSound(item);
@@ -1140,7 +1209,7 @@ public class Main : Game {
     }
 
     #region Builders
-    private void BuildContextSliders(SoundboardItem item) {
+    public void BuildContextSliders(SoundboardItem item) {
         _ctxSliders.Clear();
 
         _ctxSliders.Add(new ContextMenuSlider {
@@ -1173,7 +1242,7 @@ public class Main : Game {
         for (int i = 0; i < _categories.Count; i++) {
             var bounds = new Rectangle(
                 16,
-                8 + size * (i + 1) + _catScroll,
+                8 + (8 + size) * (i + 1) + _catScroll,
                 size,
                 size
             );
@@ -1254,7 +1323,7 @@ public class Main : Game {
         _buttons = buttons;
     }
 
-    private void BuildSettingsItems() {
+    public void BuildSettingsItems() {
         _settingsItems.Clear();
 
         foreach (var prop in typeof(Preferences).GetProperties(BindingFlags.Public | BindingFlags.Static)) {
@@ -1273,6 +1342,16 @@ public class Main : Game {
 
             _settingsItems.Add(new SettingsItem(prop, prop.Name, desc?.Description, type));
         }
+    }
+    
+    public static TextBox CreateTextBox(float transparency = 0f, TextBox.FocusedEvent focused = null, TextBox.FocusedEvent unfocused = null) {
+        var text = new TextBox {
+            Transparency = transparency
+        };
+        text.OnFocused += focused;
+        text.OnUnfocused += unfocused;
+        TextBoxes.Add(text);
+        return text;
     }
     #region Settings drawers
     private void DrawBool(SettingsItem item, Rectangle row) {
@@ -1350,6 +1429,17 @@ public class Main : Game {
         item.Set(new Color(r, g, b));
     }
     #endregion
+    #endregion
+
+    #region Text Events
+    public bool CreateCategory(string catName) {
+        _categories.Add(new Category() {
+            Name = catName
+        });
+        SaveSounds();
+        BuildSoundboardCategories();
+        return true;
+    }
     #endregion
 
     #region SDL hacking
