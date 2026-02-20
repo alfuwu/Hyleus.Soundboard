@@ -25,24 +25,44 @@
 /processorParam:TextureFormat=Color
 /build:DefaultIcon.png
 
-#begin Font.spritefont
-/importer:FontDescriptionImporter
-/processor:FontDescriptionProcessor
-/processorParam:PremultiplyAlpha=True
-/processorParam:TextureFormat=Compressed
-/build:Font.spritefont
+#begin Fonts/Font1.xnb
+/copy:Fonts/Font1.xnb
 
-#begin iChannel2.png
-/importer:TextureImporter
-/processor:TextureProcessor
-/processorParam:ColorKeyColor=255,0,255,255
-/processorParam:ColorKeyEnabled=True
-/processorParam:GenerateMipmaps=False
-/processorParam:PremultiplyAlpha=True
-/processorParam:ResizeToPowerOfTwo=False
-/processorParam:MakeSquare=False
-/processorParam:TextureFormat=Color
-/build:iChannel2.png
+#begin Fonts/Font2.xnb
+/copy:Fonts/Font2.xnb
+
+#begin Fonts/Font3.xnb
+/copy:Fonts/Font3.xnb
+
+#begin Fonts/Font4.xnb
+/copy:Fonts/Font4.xnb
+
+#begin Fonts/Font5.xnb
+/copy:Fonts/Font5.xnb
+
+#begin Fonts/Font6.xnb
+/copy:Fonts/Font6.xnb
+
+#begin Fonts/Font7.xnb
+/copy:Fonts/Font7.xnb
+
+#begin Fonts/Font8.xnb
+/copy:Fonts/Font8.xnb
+
+#begin Fonts/Font9.xnb
+/copy:Fonts/Font9.xnb
+
+#begin Fonts/Font10.xnb
+/copy:Fonts/Font10.xnb
+
+#begin Fonts/Font11.xnb
+/copy:Fonts/Font11.xnb
+
+#begin Fonts/Font12.xnb
+/copy:Fonts/Font12.xnb
+
+#begin Fonts/Font13.xnb
+/copy:Fonts/Font13.xnb
 
 #begin Settings.png
 /importer:TextureImporter

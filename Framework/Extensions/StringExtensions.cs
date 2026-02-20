@@ -50,4 +50,12 @@ public static class StringExtensions {
             big = big * alphabetSize + (c - 33 - alphabetSize);
         return big.ToByteArray(true, true).Decode(Encoding.UTF8);
     }
+
+    public static int CountNewlines(this string str) {
+        int index = -1;
+        int count = 0;
+        while (-1 != (index = str.IndexOf('\n', index + 1)))
+            count++;
+        return count + 1;
+    }
 }

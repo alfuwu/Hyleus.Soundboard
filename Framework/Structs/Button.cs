@@ -7,4 +7,5 @@ public class Button<T> {
     public Rectangle Bounds;
     public Texture2D Icon;
     public string IconLocation;
+    public string Name;
 }

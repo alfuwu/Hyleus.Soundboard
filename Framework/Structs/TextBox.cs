@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -23,13 +24,14 @@ public partial class TextBox() {
     public bool Numerical;
     public float Transparency;
 
-    public delegate bool Event();
-    public delegate bool FocusedEvent(TextBox focusChanged);
-    public delegate bool TextChangedEvent(string text);
+    public delegate void Event();
+    public delegate bool FocusedEvent(TextBox self, TextBox focusChanged);
+    public delegate bool TextChangedEvent(TextBox self, string text);
     public event TextChangedEvent OnInputEntered;
     public event FocusedEvent OnFocused;
     public event FocusedEvent OnUnfocused;
     public event TextChangedEvent OnInputChanged;
+    public event Event OnReset;
 
     public bool IsFocused => _focusedTextBox == this;
 
@@ -58,17 +60,24 @@ public partial class TextBox() {
     }
     public static void ProcessInput(Keys key, char character) => _focusedTextBox?.PressKey(key, character);
 
+    public void Reset() {
+        Text = string.Empty;
+        Caret = 0;
+        SelectionStart = -1;
+        OnReset.Invoke();
+    }
+
     public void Focus() {
         if (IsFocused)
             return;
         TextBox oldFocus = _focusedTextBox;
-        if (OnFocused?.Invoke(oldFocus) == false || oldFocus?.Unfocus(this) == false)
+        if (OnFocused?.Invoke(this, oldFocus) == false || oldFocus?.Unfocus(this) == false)
             return;
         _focusedTextBox = this;
     }
 
     public bool Unfocus(TextBox newFocus = null) {
-        if (!IsFocused || OnUnfocused?.Invoke(newFocus) == false || OnInputEntered?.Invoke(Text) == false)
+        if (!IsFocused || OnUnfocused?.Invoke(this, newFocus) == false || OnInputEntered?.Invoke(this, Text) == false)
             return false;
         _pressed.Clear();
         SelectionStart = -1;
@@ -232,6 +241,17 @@ public partial class TextBox() {
         }
 
         if (oldText != Text)
-            OnInputChanged?.Invoke(oldText);
+            OnInputChanged?.Invoke(this, oldText);
+    }
+
+    public void SubscribeUntilReset(Action subscribe, Action unsubscribe) {
+        subscribe();
+
+        void Clean() {
+            unsubscribe();
+            OnReset -= Clean;
+        }
+
+        OnReset += Clean;
     }
 }

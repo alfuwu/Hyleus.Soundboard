@@ -4,9 +4,11 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using FontStashSharp;
 using Hyleus.Soundboard.Audio;
 using Hyleus.Soundboard.Framework;
 using Hyleus.Soundboard.Framework.Enums;
@@ -48,9 +50,9 @@ public class Main : Game {
     // constants
     private const ushort FILE_VERSION = 0;
     private const int menuWidth = 220;
-    private const int menuItemHeight = 36;
+    private const int menuItemHeight = 50;
     private const int horizontalPadding = 18;
-    private const int sliderHeight = 48;
+    private const int sliderHeight = 62;
     private const int SettingsRowHeight = 56;
     private const int SettingsPadding = 24;
     private const int SettingsLabelWidth = 260;
@@ -63,6 +65,7 @@ public class Main : Game {
     // core
     private readonly GraphicsDeviceManager _graphics;
     private SpriteBatch _spriteBatch;
+	private FontSystem _fontSystem;
     private AudioEngine _audio;
 
     // main soundboard stuff
@@ -77,7 +80,7 @@ public class Main : Game {
     private MouseState _mouse;
 
     // textures
-    private SpriteFont _font;
+    private DynamicSpriteFont _font;
     private Texture2D _pixel;
     private Texture2D _defaultIcon;
     private Texture2D _settingsIcon;
@@ -127,6 +130,10 @@ public class Main : Game {
     private Rectangle _settingsButton;
     private Rectangle _settings;
 
+    // voice changer stuff
+    private bool _voiceChangerTab = false;
+    private Rectangle _voiceChangerButton;
+
     // dragging
     private int _draggingIdx = -1;
     private Point? _dragStart = null;
@@ -134,16 +141,12 @@ public class Main : Game {
     private const float DragThreshold = 10; // in pixels
 
     // misc
-    private bool _wasActive;
-    private Rectangle _voiceChangerButton;
-
-    public static Vector2I WindowSize {
-        get => new(Instance._graphics.PreferredBackBufferWidth, Instance._graphics.PreferredBackBufferHeight);
-        set { Instance._graphics.PreferredBackBufferWidth = value.X; Instance._graphics.PreferredBackBufferHeight = value.Y; Instance._graphics.ApplyChanges(); }
-    }
-
-    public static int ScreenWidth { get; set; } = 1280;
-    public static int ScreenHeight { get; set; } = 720;
+    private bool _wasActive = true;
+    private double _hoverMs = 0;
+    private Point? _hoverPosition = null;
+    private const double HoverThreshold = 500;
+    // renders stuff after buttons & background things but before settings and blur target swapping
+    private readonly List<Action> _deferredRenders = [];
 
     private int _categoryListSize = 104;
     private int CategoryListSize {
@@ -157,6 +160,14 @@ public class Main : Game {
     private int _buttonSize;
     private int _currentColumns;
     private int Rows => _currentColumns <= 0 ? 0 : _sounds.Count / _currentColumns;
+
+    public static Vector2I WindowSize {
+        get => new(Instance._graphics.PreferredBackBufferWidth, Instance._graphics.PreferredBackBufferHeight);
+        set { Instance._graphics.PreferredBackBufferWidth = value.X; Instance._graphics.PreferredBackBufferHeight = value.Y; Instance._graphics.ApplyChanges(); }
+    }
+
+    public static int ScreenWidth { get; set; } = 1280;
+    public static int ScreenHeight { get; set; } = 720;
 
     public static Main Instance { get; private set; }
 
@@ -209,7 +220,16 @@ public class Main : Game {
 
         _menuItems = [
             ("Play", () => _audio.PlaySound(_ctxItem)),
-            ("Change Name", () => {}),
+            ("Change Name", () => {
+                lock (_text) {
+                    _text.Reset();
+                    _text.Focus();
+                    _text.SubscribeUntilReset(
+                        () => _text.OnInputEntered += ChangeButtonName,
+                        () => _text.OnInputEntered -= ChangeButtonName
+                    );
+                }
+            }),
             ("Set Icon", () => {
                 var i = _ctxItem; // save ctx item because the context menu will disappear before the file dialog is finished
                 new Thread(() => {
@@ -251,8 +271,20 @@ public class Main : Game {
             ("Open", () => {
                 _currentCat = _ctxCat.UUID;
                 BuildSoundboardGrid();
+                _voiceChangerTab = false;
             }),
-            ("Change Name", () => {}),
+            ("Change Name", () => {
+                if (_text.IsFocused)
+                    return;
+                lock (_text) {
+                    _text.Reset();
+                    _text.Focus();
+                    _text.SubscribeUntilReset(
+                        () => _text.OnInputEntered += ChangeCategoryName,
+                        () => _text.OnInputEntered -= ChangeCategoryName
+                    );
+                }
+            }),
             ("Set Icon", () => {
                 var i = _ctxCat;
                 new Thread(() => {
@@ -281,18 +313,24 @@ public class Main : Game {
             ("Create Category", () => {
                 if (_text.IsFocused)
                     return;
-                _text.Focus();
-                _text.OnInputEntered += CreateCategory;
+                lock (_text) {
+                    _text.Reset();
+                    _text.Focus();
+                    _text.SubscribeUntilReset(
+                        () => _text.OnInputEntered += CreateCategory,
+                        () => _text.OnInputEntered -= CreateCategory
+                    );
+                }
             }),
         ];
 
-        _text = CreateTextBox(1f, (oldFocus) => {
+        _text = CreateTextBox(1f, (self, oldFocus) => {
             FadeInBlur();
-            Interpolation.To("TextTransparency", f => _text.Transparency = f, _text.Transparency, 0f, 0.5f);
+            Interpolation.To("TextTransparency", f => self.Transparency = f, self.Transparency, 0f, 0.5f);
             return true;
-        }, (newFocus) => {
+        }, (self, newFocus) => {
             FadeOutBlur();
-            Interpolation.To("TextTransparency", f => _text.Transparency = f, _text.Transparency, 1f, 0.5f);
+            Interpolation.To("TextTransparency", f => self.Transparency = f, self.Transparency, 1f, 0.5f);
             return true;
         });
     }
@@ -408,16 +446,27 @@ public class Main : Game {
             Log.Info("Successfully loaded soundboad data");
         }
 
-        _font = Content.Load<SpriteFont>("Font");
+		_fontSystem = new FontSystem();
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font1.xnb"));  // DroidSans.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font2.xnb"));  // DroidSansJapanese.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font3.xnb"));  // NotoSansBengali_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font4.xnb"));  // NotoSansDevanagari_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font5.xnb"));  // NotoSansGeorgian_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font6.xnb"));  // NotoSansHebrew_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font7.xnb"));  // NotoSansMalayalamUI_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font8.xnb"));  // NotoSansOriya_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font9.xnb"));  // NotoSansSinhala_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font10.xnb")); // NotoSansTamilUI_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font11.xnb")); // NotoSansTeluguUI_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font12.xnb")); // NotoSansThai_Regular.ttf
+		_fontSystem.AddFont(File.ReadAllBytes(@"Content/Fonts/Font13.xnb")); // Twemoji.ttf
+        _font = _fontSystem.GetFont(300);
 
         _pixel = new Texture2D(GraphicsDevice, 1, 1);
         _pixel.SetData([Color.White]);
         _defaultIcon = Content.Load<Texture2D>("DefaultIcon");
         _settingsIcon = Content.Load<Texture2D>("Settings");
         _voiceChangerIcon = Content.Load<Texture2D>("DefaultIcon"); // TODO: make icon
-
-        //var iChannel2 = Content.Load<Texture2D>("iChannel2");
-        //_graphics.GraphicsDevice.Textures[2] = iChannel2;
 
         _blur = Content.Load<Effect>("Shaders/Blur");
         _menu = Content.Load<Effect>("Shaders/Menu");
@@ -451,7 +500,7 @@ public class Main : Game {
         Interpolation.Update(gameTime);
         TextBox.ProcessInput(Keyboard.GetState(), gameTime.ElapsedGameTime.TotalSeconds);
 
-        DoClickyClacky();
+        DoClickyClacky(gameTime);
 
         _wasActive = IsActive;
 
@@ -483,56 +532,18 @@ public class Main : Game {
         );
         _spriteBatch.End();
 
-        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
-        _spriteBatch.Draw(
-            _pixel,
-            _settingsButton,
-            MouseHover(_settingsButton) ? LeftClick() ?
-                _btnPressed : _btnHover : _btn
-        );
-        _spriteBatch.Draw(
-            _settingsIcon,
-            _settingsButton,
-            MouseHover(_settingsButton) ? LeftClick() ?
-                Color.Gray : Color.DarkGray : Color.White
-        );
-        _spriteBatch.Draw(
-            _pixel,
-            _voiceChangerButton,
-            MouseHover(_voiceChangerButton) ? LeftClick() ?
-                _btnPressed : _btnHover : _btn
-        );
-        _spriteBatch.Draw(
-            _voiceChangerIcon,
-            _voiceChangerButton,
-            MouseHover(_voiceChangerButton) ? LeftClick() ?
-                Color.Gray : Color.DarkGray : Color.White
-        );
-        _spriteBatch.End();
-
-        GraphicsDevice.ScissorRectangle = new Rectangle(0, 0, CategoryListSize, ScreenHeight - CategoryListSize * 2);
-        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors, effect: _rounded);
-        for (int i = 0; i < _catButtons.Length; i++) {
-            var btn = _catButtons[i];
-            DrawButton(btn);
-            if (btn.Item.UUID == _currentCat)
-                _spriteBatch.Draw(_pixel, new Rectangle(6, btn.Bounds.Y + 8, 5, btn.Bounds.Height - 16), Color.White);
-        }
-
-        _spriteBatch.End();
-        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
-        for (int i = 0; i < _buttons.Length; i++) {
-            if (i == _draggingIdx)
-                continue;
-            int samplePos = GetSamplePos(i);
-            DrawButton(_buttons[i], i, samplePos != i ? _buttons[samplePos].Bounds.Location : null);
-        }
-        if (_draggingIdx >= 0)
-            DrawButton(_buttons[_draggingIdx], _draggingIdx, _mouse.Position - _dragOffset);
-        _spriteBatch.End();
+        DrawTabButtons();
+        DrawCategories();
+        if (_voiceChangerTab)
+            DrawVoiceChangerTab();
+        else
+            DrawSoundboardButtons();
 
         if (_ctxItem != null || _ctxCat != null || _generalCtx)
             DrawContextMenu(_ctxPos);
+
+        _deferredRenders.ForEach(action => action.Invoke());
+        _deferredRenders.Clear();
 
         if (blur)
             DrawBlur();
@@ -587,11 +598,82 @@ public class Main : Game {
         return i;
     }
 
+#region Drawing
+    private void DrawTabButtons() {
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
+        _spriteBatch.Draw(
+            _pixel,
+            _settingsButton,
+            MouseHover(_settingsButton) ? LeftClick() ?
+                _btnPressed : _btnHover : _btn
+        );
+        _spriteBatch.Draw(
+            _settingsIcon,
+            _settingsButton,
+            MouseHover(_settingsButton) ? LeftClick() ?
+                Color.Gray : Color.DarkGray : Color.White
+        );
+        _spriteBatch.Draw(
+            _pixel,
+            _voiceChangerButton,
+            MouseHover(_voiceChangerButton) ? LeftClick() ?
+                _btnPressed : _btnHover : _btn
+        );
+        _spriteBatch.Draw(
+            _voiceChangerIcon,
+            _voiceChangerButton,
+            MouseHover(_voiceChangerButton) ? LeftClick() ?
+                Color.Gray : Color.DarkGray : Color.White
+        );
+        if (_voiceChangerTab)
+            _spriteBatch.Draw(_pixel, new Rectangle(6, _voiceChangerButton.Y + 8, 5, _voiceChangerButton.Height - 16), Color.White);
+        _spriteBatch.End();
+    }
+    
+    private void DrawCategories() {
+        GraphicsDevice.ScissorRectangle = new Rectangle(0, 0, CategoryListSize, ScreenHeight - CategoryListSize * 2);
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors, effect: _rounded);
+        for (int i = 0; i < _catButtons.Length; i++) {
+            var btn = _catButtons[i];
+            DrawButton(btn);
+            if (btn.Item.UUID == _currentCat && !_voiceChangerTab)
+                _spriteBatch.Draw(_pixel, new Rectangle(6, btn.Bounds.Y + 8, 5, btn.Bounds.Height - 16), Color.White);
+
+            if (_hoverPosition.HasValue && btn.Bounds.Contains(_hoverPosition.Value) && !BadHover(_hoverPosition.Value) && btn.Name != null)
+                DrawTooltip(_hoverPosition.Value, btn.Name);
+        }
+
+        _spriteBatch.End();
+    }
+
+    private void DrawSoundboardButtons() {
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
+        for (int i = 0; i < _buttons.Length; i++) {
+            if (i == _draggingIdx)
+                continue;
+            int samplePos = GetSamplePos(i);
+            Rectangle bounds =  _buttons[samplePos].Bounds;
+            string name = _buttons[i].Name;
+            DrawButton(_buttons[i], i, samplePos != i ? bounds.Location : null);
+
+            if (_hoverPosition.HasValue && bounds.Contains(_hoverPosition.Value) && !BadHover(_hoverPosition.Value) && name != null)
+                DrawTooltip(_hoverPosition.Value, name);
+        }
+        if (_draggingIdx >= 0)
+            DrawButton(_buttons[_draggingIdx], _draggingIdx, _mouse.Position - _dragOffset);
+        _spriteBatch.End();
+    }
+
     private void DrawButton<T>(Button<T> button, int? idx = null, Point? pos = null) {
-        var dragged = idx == _draggingIdx;
+        bool dragged = idx == _draggingIdx;
         var rect = pos.HasValue ?
             button.Bounds.WithPosition(pos.Value) :
             button.Bounds;
+
+        // smol
+        if (dragged && _catButtons.Any(btn => btn.Bounds.Contains(_mouse.Position)))
+            rect = rect.Exflate(-18, -18);
+            
         _spriteBatch.Draw(
             _pixel,
             rect,
@@ -643,6 +725,7 @@ public class Main : Game {
             outline
         );
     }
+    
     private void DrawTextBoxText(TextBox text, double seconds, Color? color = null) {
         GraphicsDevice.ScissorRectangle = text.Bounds;
         var c = color ?? Color.White;
@@ -654,7 +737,7 @@ public class Main : Game {
             _spriteBatch.Draw(
                 _pixel,
                 bounds,
-                Color.LightBlue
+                Color.Blue
             );
         }
 
@@ -663,11 +746,7 @@ public class Main : Game {
             text.Text,
             text.Bounds.Location.ToVector2() + new Vector2(3, 0),
             c,
-            0,
-            Vector2.Zero,
-            0.25f,
-            SpriteEffects.None,
-            0
+            scale: new Vector2(0.25f)
         );
 
         // caret
@@ -680,6 +759,32 @@ public class Main : Game {
                 c
             );
         }
+    }
+
+    private void DrawTooltip(Point position, string text) {
+        _deferredRenders.Add(() => {
+            _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
+            float width = _font.MeasureString(text).X * 0.25f;
+            while (position.X + 30 + width > ScreenWidth && text.IndexOf('\n') != 1) {
+                for (int i = 0; i < text.Length; i++) {
+                    float w = _font.MeasureString(text[..^i]).X * 0.25f;
+                    if (position.X + 30 + w <= ScreenWidth) {
+                        text = text[..^i] + "\n" + text[i..];
+                        width = w;
+                        break;
+                    }
+                }
+            }
+            _spriteBatch.Draw(_pixel, new Rectangle(position.X + 20, position.Y + 15, (int)width, _font.LineHeight * text.CountNewlines() / 4).Exflate(10, 5), new Color(0, 0, 0, 128));
+            _spriteBatch.DrawString(
+                _font,
+                text,
+                position.ToVector2() + new Vector2(20, 15),
+                Color.White,
+                scale: new Vector2(0.25f)
+            );
+            _spriteBatch.End();
+        });
     }
 
     private void DrawContextMenu(Point position) {
@@ -725,13 +830,9 @@ public class Main : Game {
             _spriteBatch.DrawString(
                 _font,
                 _currentMenuItems[i].name,
-                new Vector2(itemRect.X + horizontalPadding, itemRect.Y + 8),
+                new Vector2(itemRect.X + horizontalPadding, itemRect.Y + 4),
                 Color.White,
-                0,
-                Vector2.Zero,
-                0.12f,
-                SpriteEffects.None,
-                0
+                scale: new Vector2(0.125f)
             );
         }
 
@@ -755,9 +856,9 @@ public class Main : Game {
             _spriteBatch.DrawString(
                 _font,
                 $"{slider.Label}: {slider.GetValue() * 100:n0}%",
-                new Vector2(rect.X + 18, rect.Y + 6),
-                Color.White, 0, Vector2.Zero, 0.12f,
-                SpriteEffects.None, 0
+                new Vector2(rect.X + 18, rect.Y + 4),
+                Color.White,
+                scale: new Vector2(0.125f)
             );
 
             // slider bar
@@ -798,16 +899,8 @@ public class Main : Game {
         _spriteBatch.End();
     }
 
-    private void FadeOutBlur() {
-        var param = _blur.Parameters["BlurStrength"];
-        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
-        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
-    }
-
-    private void FadeInBlur() {
-        var param = _blur.Parameters["BlurStrength"];
-        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
-        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+    private void DrawVoiceChangerTab() {
+        
     }
 
     private void DrawSettings() {
@@ -831,7 +924,13 @@ public class Main : Game {
                 SettingsRowHeight
             );
 
-            _spriteBatch.DrawString(_font, item.Name, row.Location.ToVector2(), _settingsColor, 0, Vector2.Zero, 0.12f, SpriteEffects.None, 0);
+            _spriteBatch.DrawString(
+                _font,
+                item.Name,
+                row.Location.ToVector2(),
+                _settingsColor,
+                scale: new Vector2(0.12f)
+            );
 
             switch (item.ControlType) {
                 case SettingsControlType.Bool:
@@ -870,9 +969,23 @@ public class Main : Game {
 
         _spriteBatch.End();
     }
+#endregion
+
+    private void FadeOutBlur() {
+        var param = _blur.Parameters["BlurStrength"];
+        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 0, 0.5f);
+        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.White, 0.5f);
+    }
+
+    private void FadeInBlur() {
+        var param = _blur.Parameters["BlurStrength"];
+        Interpolation.To("blur", param.SetValue, param.GetValueSingle(), 3000, 0.5f);
+        Interpolation.To("blurColor", col => _blurColor = col, _blurColor, Color.DarkGray, 0.5f);
+    }
 
     private bool LeftClick() => _mouse.LeftButton == ButtonState.Pressed && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) && !_settingsOpen && _draggingIdx < 0;
-    private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) && !_settingsOpen && _draggingIdx < 0;
+    private bool MouseHover(Rectangle rect) => rect.Contains(_mouse.Position) && !BadHover(_mouse.Position);
+    private bool BadHover(Point point) => _ctxRect.HasValue && _ctxRect.Value.Contains(point) || _settingsOpen || _draggingIdx >= 0;
     private bool Clicked(Rectangle r) =>
         _mouse.LeftButton == ButtonState.Pressed &&
         _previousMouse.LeftButton == ButtonState.Released &&
@@ -923,7 +1036,8 @@ public class Main : Game {
     }
 
     // BUG: holding left click on the window after it wasnt in focus acts as though you right clicked for some reason
-    private void DoClickyClacky() {
+    // BUG: sliders don't let go for some reason
+    private void DoClickyClacky(GameTime delta) {
         // closing the settings menu
         if (_mouse.LeftButton == ButtonState.Pressed &&
             _previousMouse.LeftButton == ButtonState.Released &&
@@ -944,6 +1058,17 @@ public class Main : Game {
         bool lc = LeftClick();
         bool click = _mouse.LeftButton == ButtonState.Pressed &&
             (_previousMouse.LeftButton == ButtonState.Released || skipPressed);
+
+        bool stayed = float.Abs(Vector2.Distance(_previousMouse.Position.ToVector2(), _mouse.Position.ToVector2())) < 4;
+        if (stayed) {
+            _hoverMs += delta.ElapsedGameTime.TotalMilliseconds;
+            if (_hoverMs > HoverThreshold && !_hoverPosition.HasValue)
+                _hoverPosition = _mouse.Position;
+        }
+        if (!stayed || _hoverPosition.HasValue && float.Abs(Vector2.Distance(_hoverPosition.Value.ToVector2(), _mouse.Position.ToVector2())) > DragThreshold) {
+            _hoverPosition = null;
+            _hoverMs = 0;
+        }
 
         // context menu clicky clackies
         if ((_ctxItem != null || _ctxCat != null || _generalCtx) && _ctxRect.HasValue && IsActive) {
@@ -979,6 +1104,7 @@ public class Main : Game {
                 return;
             }
         }
+
         // dragging soundboard buttons to reposition/move them into a new category
         if (_draggingIdx < 0) {
             if (lc) {
@@ -997,6 +1123,8 @@ public class Main : Game {
                 _dragStart = null;
             }
         }
+
+        // drag stop
         bool left = _mouse.LeftButton == ButtonState.Released &&
             (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
         if (left && _draggingIdx >= 0) {
@@ -1011,9 +1139,9 @@ public class Main : Game {
                 } else {
                     // TODO: figure this shit out
                     // this is causing a lot of crashes when trying to move a soundboard button to the end
-                    bool cap = buttonIdx >= _sounds.IndexOf(sound);
+                    bool cap = buttonIdx >= _buttons.Length;
                     if (cap)
-                        buttonIdx--;
+                        buttonIdx = _buttons.Length - 1;
                     _sounds.Remove(sound);
                     _sounds.Insert(_sounds.IndexOf(_buttons[buttonIdx].Item) + (cap ? 1 : 0), sound);
                 }
@@ -1021,7 +1149,10 @@ public class Main : Game {
                 BuildSoundboardGrid();
             }
             _draggingIdx = -1;
-        } else if ((left ||
+        }
+        
+        // generic clicking
+        else if ((left ||
             _mouse.RightButton == ButtonState.Released &&
             (_previousMouse.RightButton == ButtonState.Pressed || skipPressed)) &&
             (!_ctxRect.HasValue || !_ctxRect.Value.Contains(_mouse.Position)) &&
@@ -1035,6 +1166,7 @@ public class Main : Game {
                     if (left) {
                         _currentCat = cat.Item.UUID;
                         BuildSoundboardGrid();
+                        _voiceChangerTab = false;
                     } else {
                         _ctxPos = _mouse.Position;
                         _ctxCat = cat.Item;
@@ -1062,20 +1194,19 @@ public class Main : Game {
                 _generalCtx = true;
             }
 
-            // opening settings menu
+            // opening settings menu/voice changer tab
             if (MouseHover(_settingsButton)) {
                 _settingsOpen = true;
                 FadeInBlur();
                 Interpolation.To("setColor", col => _settingsColor = col, _settingsColor, Color.White, 0.5f);
             } else if (MouseHover(_voiceChangerButton)) {
-
+                _voiceChangerTab = true;
             }
             
-            if (MouseHover(_text.Bounds)) {
+            if (MouseHover(_text.Bounds))
                 _text.Focus();
-            } else {
+            else
                 _text.Unfocus();
-            }
         }
 
         // resetting ctx menu sliders
@@ -1237,7 +1368,8 @@ public class Main : Game {
                 UUID = null
             },
             Bounds = new Rectangle(16, 8 + _catScroll, size, size),
-            Icon = _defaultIcon
+            Icon = _defaultIcon,
+            Name = "Uncategorized"
         };
         for (int i = 0; i < _categories.Count; i++) {
             var bounds = new Rectangle(
@@ -1260,7 +1392,8 @@ public class Main : Game {
                 Item = cat,
                 Bounds = bounds,
                 Icon = icon,
-                IconLocation = cat.IconLocation
+                IconLocation = cat.IconLocation,
+                Name = cat.Name
             };
         }
 
@@ -1316,7 +1449,8 @@ public class Main : Game {
                 Item = sound,
                 Bounds = bounds,
                 Icon = icon,
-                IconLocation = sound.IconLocation
+                IconLocation = sound.IconLocation,
+                Name = sound.Name
             };
         }
 
@@ -1400,10 +1534,12 @@ public class Main : Game {
         }
 
         _spriteBatch.Draw(_pixel, button, _btn * _settingsColor);
-        _spriteBatch.DrawString(_font,
+        _spriteBatch.DrawString(
+            _font,
             item.Get().ToString(),
             new Vector2(button.X + 8, button.Y + 6),
-            _settingsColor, 0, Vector2.Zero, 0.12f, SpriteEffects.None, 0
+            _settingsColor,
+            scale: new Vector2(0.12f)
         );
     }
 
@@ -1432,7 +1568,27 @@ public class Main : Game {
     #endregion
 
     #region Text Events
-    public bool CreateCategory(string catName) {
+    public bool ChangeButtonName(TextBox self, string name) {
+        if (_ctxItem == null) {
+            Log.Warn("Tried to change soundboard button name, but there is no current soundboard button!");
+            return true;
+        }
+        _ctxItem.Name = name;
+        SaveSounds();
+        BuildSoundboardGrid(); // required due to tooltip hover
+        return true;
+    }
+    public bool ChangeCategoryName(TextBox self, string catName) {
+        if (_ctxCat == null) {
+            Log.Warn("Tried to change category name, but there is no current category!");
+            return true;
+        }
+        _ctxCat.Name = catName;
+        SaveSounds();
+        BuildSoundboardCategories(); // required due to tooltip hover
+        return true;
+    }
+    public bool CreateCategory(TextBox self, string catName) {
         _categories.Add(new Category() {
             Name = catName
         });
@@ -1442,7 +1598,7 @@ public class Main : Game {
     }
     #endregion
 
-    #region SDL hacking
+#region SDL hacking
     private unsafe int HandleSDLEvent(IntPtr userdata, IntPtr ptr) {
         SDL_Event* e = (SDL_Event*)ptr;
 
@@ -1480,5 +1636,5 @@ public class Main : Game {
         }
     }
 #endif
-    #endregion
+#endregion
 }
