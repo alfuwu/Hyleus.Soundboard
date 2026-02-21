@@ -8,7 +8,7 @@ public class Category() {
 
     public string Name { get; set; } = string.Empty;
     public string IconLocation { get; set; } = null;
-    public Guid? UUID { get; set; } = Guid.NewGuid();
+    public Guid? UUID { get; init; } = Guid.NewGuid();
 
     public static Category FromBinary(BinaryReader reader, byte schemaVer) => new() {
         Name = reader.ReadString(reader.ReadByte()),

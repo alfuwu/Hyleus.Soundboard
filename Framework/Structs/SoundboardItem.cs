@@ -20,7 +20,7 @@ public class SoundboardItem() {
     public bool RequiresShift { get => (_flags & 2) != 0; set { if (value) _flags |= 2; else unchecked { _flags &= (byte)~2; } } }
     public bool RequiresAlt { get => (_flags & 4) != 0; set { if (value) _flags |= 4; else unchecked { _flags &= (byte)~4; } } }
     public bool Loop { get => (_flags & 8) != 0; set { if (value) _flags |= 8; else unchecked { _flags &= (byte)~8; } } }
-    public Guid UUID { get; set; } = Guid.NewGuid();
+    public Guid UUID { get; init; } = Guid.NewGuid();
     public Guid? CategoryID { get; set; } = null;
 
     public delegate void FloatChangedEvent(float oldValue, float newValue);
@@ -48,7 +48,7 @@ public class SoundboardItem() {
             return;
         }
         if (!File.Exists(SoundLocation)) {
-            Log.Error("No file found at SoundLocation '" + SoundLocation + "' (missing for SoundboardItem " + ToString() + ")");
+            Log.Error("No file found at SoundLocation '" + SoundLocation + "' (missing for SoundboardItem " + ToString() + "); skipping");
             return;
         }
         writer.Write(Name ?? string.Empty);

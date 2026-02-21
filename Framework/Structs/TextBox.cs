@@ -64,7 +64,7 @@ public partial class TextBox() {
         Text = string.Empty;
         Caret = 0;
         SelectionStart = -1;
-        OnReset.Invoke();
+        OnReset?.Invoke();
     }
 
     public void Focus() {
@@ -77,7 +77,7 @@ public partial class TextBox() {
     }
 
     public bool Unfocus(TextBox newFocus = null) {
-        if (!IsFocused || OnUnfocused?.Invoke(this, newFocus) == false || OnInputEntered?.Invoke(this, Text) == false)
+        if (!IsFocused || OnUnfocused?.Invoke(this, newFocus) == false)
             return false;
         _pressed.Clear();
         SelectionStart = -1;
@@ -102,11 +102,11 @@ public partial class TextBox() {
     public static int GetNextSpace(string after, bool control) {
         int i = 1;
         int idx = after.Length > 1 ? after[1..].IndexOf(' ') : -1;
-        if (control)
-            if (idx == -1)
-                i = after.Length;
-            else
-                i = int.Max(idx + 2, 0);
+        if (!control)
+            return int.Min(i, after.Length);
+        i = idx == -1 ?
+            after.Length :
+            int.Max(idx + 2, 0);
         return int.Min(i, after.Length);
     }
 
@@ -188,7 +188,8 @@ public partial class TextBox() {
                 SelectionEnd = Caret;
                 break;
             case Keys.Enter:
-                Unfocus();
+                if (OnInputEntered?.Invoke(this, Text) != false)
+                    Unfocus();
                 break;
             case Keys.A:
                 if (control) {
@@ -247,11 +248,12 @@ public partial class TextBox() {
     public void SubscribeUntilReset(Action subscribe, Action unsubscribe) {
         subscribe();
 
+        OnReset += Clean;
+        return;
+
         void Clean() {
             unsubscribe();
             OnReset -= Clean;
         }
-
-        OnReset += Clean;
     }
 }

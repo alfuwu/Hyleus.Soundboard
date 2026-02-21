@@ -1,7 +1,7 @@
 ﻿using System;
 
 namespace Hyleus.Soundboard.Framework.Structs;
-public struct ContextMenuSlider {
+public record struct ContextMenuSlider {
     public string Label { get; init; }
 
     public float Min { get; init; }

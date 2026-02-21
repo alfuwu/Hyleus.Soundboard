@@ -126,7 +126,7 @@ public static class BinaryExtensions {
         return new string(chars);
     }
     public static string ReadStringOrNull(this BinaryReader reader) {
-        var n = reader.ReadUInt16();
+        ushort n = reader.ReadUInt16();
         return n == 0 ? null : reader.ReadString(n);
     }
     public static Vector2 ReadVector2(this BinaryReader reader) {

@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -22,12 +23,6 @@ using NativeFileDialogSharp;
 using static SDL2.SDL;
 
 // TODO:
-// - text input boxes
-// - render soundboard categories
-// - soundboard category creation modal
-// - dragging sounds into soundboard categories
-// - change sound/category names using text input boxes
-// - display the names of sounds under them
 // - voice changer tab
 //
 // - POLISH: make context menus prettier at higher resolutions
@@ -209,7 +204,7 @@ public class Main : Game {
         IsFixedTimeStep = false;
         _graphics.SynchronizeWithVerticalRetrace = false;
         WindowSize = new Vector2I(ScreenWidth, ScreenHeight);
-        blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
+        blurTarget = new RenderTarget2D(GraphicsDevice, ScreenWidth, ScreenHeight);
 
         Window.TextInput += (sender, args) => TextBox.ProcessInput(args.Key, args.Character);
         Window.FileDrop += (_, args) => {
@@ -400,7 +395,7 @@ public class Main : Game {
         SDL_SetWindowMinimumSize(Window.Handle, 480, 270);
         _ = SDL_Init(SDL_INIT_VIDEO);
 
-        _filter = new SDL_EventFilter(HandleSDLEvent);
+        _filter = HandleSDLEvent;
         SDL_AddEventWatch(_filter, IntPtr.Zero);
 
 #if OS_WINDOWS
@@ -416,7 +411,8 @@ public class Main : Game {
 
         if (File.Exists(SoundboardData)) {
             using var fs = File.OpenRead(SoundboardData);
-            using var br = new BinaryReader(fs);
+            using var def = new SeekableDeflateStream(fs);
+            using var br = new BinaryReader(def);
             ushort fileVer = br.ReadUInt16();
             _preferredInput = br.ReadStringOrNull();
             _preferredOutput = br.ReadStringOrNull();
@@ -427,23 +423,23 @@ public class Main : Game {
             byte itemSchemaVer = br.ReadByte();
             Log.Info("CAT Schema Ver:", catSchemaVer);
             Log.Info("ITM Schema Ver:", itemSchemaVer);
-            while (br.PeekChar() > 0) { // we can do this because category binary data starts with the length of their Name, and their name must have at least 1 character, thus making it impossible for the value to be zero
+            while (br.PeekChar() > 0) { // we can do this because category binary data starts with the length of their name, and their name must have at least 1 character, thus making it impossible for the value to be zero
                 try {
                     _categories.Add(Category.FromBinary(br, catSchemaVer));
                 } catch (Exception e) {
                     Log.Error("Failed to load a category:", e.Message);
                 }
             }
-            Log.Info("Successfully loaded soundboad categories");
+            Log.Info("Successfully loaded soundboard categories");
             br.ReadByte(); // eat the delimiter
-            while (fs.Position < fs.Length) {
+            while (def.Position < def.Length) {
                 try {
                     _sounds.Add(SoundboardItem.FromBinary(br, itemSchemaVer));
                 } catch (Exception e) {
                     Log.Error("Failed to load a sound:", e.Message);
                 }
             }
-            Log.Info("Successfully loaded soundboad data");
+            Log.Info("Successfully loaded soundboard data");
         }
 
 		_fontSystem = new FontSystem();
@@ -583,22 +579,22 @@ public class Main : Game {
     }
 
     private int GetSamplePos(int i) {
-        if (_draggingIdx >= 0) {
-            if (_mouse.Position.X <= CategoryListSize)
-                return _draggingIdx < i ? i - 1 : i;
-            int row = i / _currentColumns;
-            int y = row * _buttonSize + _scrollPosition;
-            int sizeY = Preferences.Margin + _buttonSize + Preferences.Padding;
-            bool below = _mouse.Position.Y > y + sizeY;
-            if (_draggingIdx < i)
-                i--;
-            if ((_mouse.Position.X < _buttons[i].Bounds.Center.X && !below) || _mouse.Position.Y < y)
-                i++;
-        }
+        if (_draggingIdx < 0)
+            return i;
+        if (_mouse.Position.X <= CategoryListSize)
+            return _draggingIdx < i ? i - 1 : i;
+        int row = i / _currentColumns;
+        int y = row * _buttonSize + _scrollPosition;
+        int sizeY = Preferences.Margin + _buttonSize + Preferences.Padding;
+        bool below = _mouse.Position.Y > y + sizeY;
+        if (_draggingIdx < i)
+            i--;
+        if ((_mouse.Position.X < _buttons[i].Bounds.Center.X && !below) || _mouse.Position.Y < y)
+            i++;
         return i;
     }
 
-#region Drawing
+    #region Drawing
     private void DrawTabButtons() {
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, effect: _rounded);
         _spriteBatch.Draw(
@@ -633,8 +629,7 @@ public class Main : Game {
     private void DrawCategories() {
         GraphicsDevice.ScissorRectangle = new Rectangle(0, 0, CategoryListSize, ScreenHeight - CategoryListSize * 2);
         _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp, rasterizerState: Scissors, effect: _rounded);
-        for (int i = 0; i < _catButtons.Length; i++) {
-            var btn = _catButtons[i];
+        foreach (var btn in _catButtons) {
             DrawButton(btn);
             if (btn.Item.UUID == _currentCat && !_voiceChangerTab)
                 _spriteBatch.Draw(_pixel, new Rectangle(6, btn.Bounds.Y + 8, 5, btn.Bounds.Height - 16), Color.White);
@@ -666,7 +661,7 @@ public class Main : Game {
 
     private void DrawButton<T>(Button<T> button, int? idx = null, Point? pos = null) {
         bool dragged = idx == _draggingIdx;
-        var rect = pos.HasValue ?
+        Rectangle rect = pos.HasValue ?
             button.Bounds.WithPosition(pos.Value) :
             button.Bounds;
 
@@ -764,16 +759,14 @@ public class Main : Game {
     private void DrawTooltip(Point position, string text) {
         _deferredRenders.Add(() => {
             _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp);
-            float width = _font.MeasureString(text).X * 0.25f;
-            while (position.X + 30 + width > ScreenWidth && text.IndexOf('\n') != 1) {
-                for (int i = 0; i < text.Length; i++) {
-                    float w = _font.MeasureString(text[..^i]).X * 0.25f;
-                    if (position.X + 30 + w <= ScreenWidth) {
-                        text = text[..^i] + "\n" + text[i..];
-                        width = w;
-                        break;
-                    }
-                }
+            float width;
+            for (int i = 0; position.X + 30 + (width = _font.MeasureString(text).X * 0.25f) > ScreenWidth && i < text.Length - 1; i++) {
+                if (char.IsHighSurrogate(text[i]) && char.IsLowSurrogate(text[i + 1]) || i > 0 && char.IsHighSurrogate(text[i-1]) && char.IsLowSurrogate(text[i]))
+                    continue; // high/low surrogates are part of multibyte characters in Unicode (e.g. emoji, chinese characters), and we don't want to cut those off in the middle (would create invalid UTF-16 characters and
+                              // would then subsequently crash the program when _font.MeasureString gets called next), so we skip. we COULD include this check and invert it in the main if statement so that we don't have to have
+                              // braces around this for loop, but i don't think i need to tell you how much that would tank the readability
+                if (position.X + 30 + _font.MeasureString(text[int.Max(0, text.LastIndexOf('\n', i+1))..(i+1)]).X * 0.25f > ScreenWidth)
+                    text = text[..i] + '\n' + text[i..];
             }
             _spriteBatch.Draw(_pixel, new Rectangle(position.X + 20, position.Y + 15, (int)width, _font.LineHeight * text.CountNewlines() / 4).Exflate(10, 5), new Color(0, 0, 0, 128));
             _spriteBatch.DrawString(
@@ -890,7 +883,7 @@ public class Main : Game {
     private void DrawBlur() {
         GraphicsDevice.SetRenderTarget(null);
         // draw the background but blurred
-        _spriteBatch.Begin(SpriteSortMode.Deferred, effect: _blur);
+        _spriteBatch.Begin(effect: _blur);
         _spriteBatch.Draw(
             blurTarget,
             new Rectangle(0, 0, blurTarget.Width, blurTarget.Height),
@@ -969,7 +962,7 @@ public class Main : Game {
 
         _spriteBatch.End();
     }
-#endregion
+    #endregion
 
     private void FadeOutBlur() {
         var param = _blur.Parameters["BlurStrength"];
@@ -1032,11 +1025,10 @@ public class Main : Game {
             settingsHeight
         );
         blurTarget.Dispose();
-        blurTarget = new(GraphicsDevice, ScreenWidth, ScreenHeight);
+        blurTarget = new RenderTarget2D(GraphicsDevice, ScreenWidth, ScreenHeight);
     }
 
     // BUG: holding left click on the window after it wasnt in focus acts as though you right clicked for some reason
-    // BUG: sliders don't let go for some reason
     private void DoClickyClacky(GameTime delta) {
         // closing the settings menu
         if (_mouse.LeftButton == ButtonState.Pressed &&
@@ -1074,10 +1066,12 @@ public class Main : Game {
         if ((_ctxItem != null || _ctxCat != null || _generalCtx) && _ctxRect.HasValue && IsActive) {
             bool boolean = _mouse.LeftButton == ButtonState.Released &&
                     (_previousMouse.LeftButton == ButtonState.Pressed || skipPressed);
-            for (int i = 0; i < _currentMenuItems.Length; i++) {
-                Rectangle rect = GetMenuItemRect(i);
+            if (boolean) {
+                for (int i = 0; i < _currentMenuItems.Length; i++) {
+                    Rectangle rect = GetMenuItemRect(i);
 
-                if (boolean && rect.Contains(_mouse.Position)) {
+                    if (!rect.Contains(_mouse.Position))
+                        continue;
                     _currentMenuItems[i].onClick.Invoke();
                     ResetCtxMenu();
                     return;
@@ -1087,10 +1081,10 @@ public class Main : Game {
             foreach (var slider in _ctxSliders) {
                 Rectangle sliderRect = GetSliderRect(slider);
 
-                if (click && sliderRect.Contains(_mouse.Position)) {
-                    _activeSlider = slider;
-                    slider.SetIsDragging(true);
-                }
+                if (!click || !sliderRect.Contains(_mouse.Position))
+                    continue;
+                _activeSlider = slider;
+                slider.SetIsDragging(true);
             }
 
             if (_activeSlider.HasValue) {
@@ -1101,6 +1095,14 @@ public class Main : Game {
 
                 float t = (_mouse.X - barX) / barWidth;
                 _activeSlider.Value.SetFromNormalized(t);
+
+                // resetting ctx menu sliders
+                if (_mouse.LeftButton != ButtonState.Released)
+                    return;
+                
+                _activeSlider.Value.SetIsDragging(false);
+                _activeSlider = null;
+                SaveSounds();
                 return;
             }
         }
@@ -1131,20 +1133,29 @@ public class Main : Game {
             // applying drag stuff
             int buttonIdx = GetHoverIndex();
             SoundboardItem sound = _buttons[_draggingIdx].Item;
-            if (buttonIdx != _draggingIdx) {
-                if (buttonIdx < 0) {
-                    // category moving
-                    var cat = _catButtons[-buttonIdx - 1].Item;
-                    sound.CategoryID = cat.UUID;
-                } else {
-                    // TODO: figure this shit out
-                    // this is causing a lot of crashes when trying to move a soundboard button to the end
-                    bool cap = buttonIdx >= _buttons.Length;
-                    if (cap)
-                        buttonIdx = _buttons.Length - 1;
+            bool changed = false; // ew is that a flag? dirty hack smh
+            // idk if allocating & setting the flag is more efficient than just reevaluating the conditions that cause the flag to be enabled (buttonIdx < 0 || buttonIdx != _draggingIdx)
+            // feels marginally less icky though so we'll go with it
+            if (buttonIdx < 0) {
+                // category moving
+                var cat = _catButtons[-buttonIdx - 1].Item;
+                sound.CategoryID = cat.UUID;
+                changed = true;
+            } else {
+                // TODO: figure this shit out
+                // i dont think im ever finishing this TODO
+                // it just works™
+                bool cap = buttonIdx >= _buttons.Length;
+                if (cap)
+                    buttonIdx = _buttons.Length - 1;
+                if (buttonIdx != _draggingIdx) {
                     _sounds.Remove(sound);
                     _sounds.Insert(_sounds.IndexOf(_buttons[buttonIdx].Item) + (cap ? 1 : 0), sound);
+                    changed = true;
                 }
+            }
+
+            if (changed) {
                 SaveSounds();
                 BuildSoundboardGrid();
             }
@@ -1162,31 +1173,31 @@ public class Main : Game {
 
             // clicking soundboard categories
             foreach (var cat in _catButtons) {
-                if (MouseHover(cat.Bounds)) {
-                    if (left) {
-                        _currentCat = cat.Item.UUID;
-                        BuildSoundboardGrid();
-                        _voiceChangerTab = false;
-                    } else {
-                        _ctxPos = _mouse.Position;
-                        _ctxCat = cat.Item;
-                    }
+                if (!MouseHover(cat.Bounds))
+                    continue;
+                if (left) {
+                    _currentCat = cat.Item.UUID;
+                    BuildSoundboardGrid();
+                    _voiceChangerTab = false;
+                } else {
+                    _ctxPos = _mouse.Position;
+                    _ctxCat = cat.Item;
                 }
             }
 
-            // clicking soundboad buttons
+            // clicking soundboard buttons
             foreach (var button in _buttons) {
-                if (MouseHover(button.Bounds)) {
-                    if (left) {
-                        if (button.Item.SoundLocation != null)
-                            _audio.PlaySound(button.Item);
-                    } else {
-                        _ctxPos = _mouse.Position;
-                        _ctxItem = button.Item;
-                        BuildContextSliders(_ctxItem);
-                    }
-                    break;
+                if (!MouseHover(button.Bounds))
+                    continue;
+                if (left) {
+                    if (button.Item.SoundLocation != null)
+                        _audio.PlaySound(button.Item);
+                } else {
+                    _ctxPos = _mouse.Position;
+                    _ctxItem = button.Item;
+                    BuildContextSliders(_ctxItem);
                 }
+                break;
             }
 
             if (_ctxItem == null && _ctxCat == null && !left) {
@@ -1207,13 +1218,6 @@ public class Main : Game {
                 _text.Focus();
             else
                 _text.Unfocus();
-        }
-
-        // resetting ctx menu sliders
-        if (_mouse.LeftButton == ButtonState.Released && _activeSlider != null) {
-            _activeSlider.Value.SetIsDragging(false);
-            _activeSlider = null;
-            SaveSounds();
         }
 
         // calculating scroll delta stuff
@@ -1290,7 +1294,8 @@ public class Main : Game {
     public void SaveSounds() {
         lock (_sounds) {
             using var fs = File.Create(SoundboardData);
-            using var bw = new BinaryWriter(fs);
+            using var def = new DeflateStream(fs, CompressionMode.Compress);
+            using var bw = new BinaryWriter(def);
             bw.Write(FILE_VERSION);
             bw.WriteStringOrNull(_preferredInput);
             bw.WriteStringOrNull(_preferredOutput);
@@ -1579,6 +1584,8 @@ public class Main : Game {
         return true;
     }
     public bool ChangeCategoryName(TextBox self, string catName) {
+        if (catName.Length < 1)
+            return false;
         if (_ctxCat == null) {
             Log.Warn("Tried to change category name, but there is no current category!");
             return true;
@@ -1589,6 +1596,8 @@ public class Main : Game {
         return true;
     }
     public bool CreateCategory(TextBox self, string catName) {
+        if (catName.Length < 1)
+            return false;
         _categories.Add(new Category() {
             Name = catName
         });
